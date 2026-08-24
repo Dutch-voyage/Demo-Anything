@@ -1,0 +1,364 @@
+version: "0.2-draft"
+id: mla-decode
+title: MLA decode · append one token and read the compressed prefix
+description: >-
+  One decode token enters an absorbed Multi-head Latent Attention layer after a
+  four-token prompt. The authored steps show single-token projection, append-only
+  cKV and RoPE cache growth, direct scoring over five compressed rows, latent
+  reduction, and output up-projection. This is an explanatory schedule, not
+  measured kernel timing.
+
+time:
+  mode: steps
+
+places:
+  - {id: input, label: New-token hidden state, role: storage, layout: memory}
+  - {id: projection, label: MLA projections, role: executor, layout: grid}
+  - {id: query_path, label: Query path, parent: projection, role: executor, layout: grid}
+  - {id: kv_path, label: KV compression path, parent: projection, role: executor, layout: grid}
+  - {id: cache, label: Growing compressed KV cache, role: storage, layout: memory}
+  - {id: latent_rows, label: cKV rows · 512 BF16/token, parent: cache, role: buffer, layout: memory}
+  - {id: rope_rows, label: kR rows · 64 BF16/token, parent: cache, role: buffer, layout: memory}
+  - {id: attention, label: Absorbed attention, role: executor, layout: grid}
+  - {id: score_path, label: Score and softmax path, parent: attention, role: executor, layout: grid}
+  - {id: value_path, label: Latent value and output path, parent: attention, role: executor, layout: grid}
+
+resources:
+  - id: projection_compute
+    label: Query and KV projection
+    owner: projection
+    kind: execution
+    capacity: {slots: 2}
+  - id: cache_write
+    label: One-token cache append
+    owner: projection_cache
+    kind: bandwidth
+    capacity: {channels: 2}
+  - id: cache_bytes
+    label: Compressed-cache residency
+    owner: cache
+    kind: storage
+    capacity: {bytes: 8192}
+  - id: score_compute
+    label: Content and position scores
+    owner: score_path
+    kind: execution
+    capacity: {slots: 2}
+  - id: softmax_pipe
+    label: Score combine and softmax
+    owner: score_path
+    kind: execution
+    capacity: {slots: 1}
+  - id: latent_reduce
+    label: Weighted latent reduction
+    owner: value_path
+    kind: execution
+    capacity: {slots: 1}
+  - id: output_projection
+    label: Value and output projection
+    owner: value_path
+    kind: execution
+    capacity: {slots: 1}
+
+links:
+  - id: projection_cache
+    label: Append new cKV and kR
+    from: projection
+    to: cache
+    directed: true
+    resource: cache_write
+  - id: query_to_attention
+    label: Absorbed query path
+    from: projection
+    to: attention
+    directed: true
+  - id: cache_to_attention
+    label: Read five compressed rows
+    from: cache
+    to: attention
+    directed: true
+
+entities:
+  - id: prefix_latent
+    label: Prefix cKV[0:4]
+    kind: compressed-kv-prefix
+    quantity: {bytes: 4096}
+    attrs: {tokens: 4, elements: 2048, per_token_dimension: 512, dtype: bf16}
+  - id: prefix_rope_key
+    label: Prefix kR[0:4]
+    kind: position-key-prefix
+    quantity: {bytes: 512}
+    attrs: {tokens: 4, elements: 256, per_token_dimension: 64, dtype: bf16, encoding: RoPE}
+  - id: decode_hidden
+    label: H[4]
+    kind: hidden-state-token
+    quantity: {tokens: 1, elements: 7168, bytes: 14336}
+    attrs: {shape: [1, 7168], dtype: bf16}
+  - id: decode_query_nope
+    label: qC[4]
+    kind: query-content-token
+    quantity: {tokens: 1}
+    attrs: {per_head_dimension: 128}
+  - id: decode_query_rope
+    label: qR[4]
+    kind: query-position-token
+    quantity: {tokens: 1}
+    attrs: {per_head_dimension: 64, encoding: RoPE}
+  - id: decode_latent
+    label: cKV[4]
+    kind: compressed-kv-token
+    quantity: {bytes: 1024}
+    attrs: {tokens: 1, elements: 512, per_token_dimension: 512, dtype: bf16}
+  - id: decode_rope_key
+    label: kR[4]
+    kind: position-key-token
+    quantity: {bytes: 128}
+    attrs: {tokens: 1, elements: 64, per_token_dimension: 64, dtype: bf16, encoding: RoPE}
+  - id: decode_absorbed_query
+    label: qC[4] · WUK
+    kind: absorbed-query-token
+    quantity: {tokens: 1}
+    attrs: {content_dimension: 512}
+  - id: decode_content_scores
+    label: Five content scores
+    kind: score-partial
+    quantity: {positions: 5}
+  - id: decode_position_scores
+    label: Five position scores
+    kind: score-partial
+    quantity: {positions: 5}
+  - id: decode_attention_weights
+    label: Attention over five positions
+    kind: attention-weights
+    quantity: {positions: 5}
+  - id: decode_latent_context
+    label: Weighted cKV context
+    kind: latent-context-token
+    quantity: {tokens: 1, elements: 512}
+  - id: decode_output
+    label: MLA output[4]
+    kind: hidden-state-token
+    quantity: {tokens: 1, elements: 7168, bytes: 14336}
+
+initial_materializations:
+  - {id: prefix.latent.cache, entity: prefix_latent, place: latent_rows}
+  - {id: prefix.rope.cache, entity: prefix_rope_key, place: rope_rows}
+  - {id: token4.input, entity: decode_hidden, place: input}
+
+operations:
+  - {id: project_decode, label: Project the new token, kind: projection}
+  - {id: append_decode_cache, label: Append one compressed cache row, kind: cache-append}
+  - {id: score_decode, label: Score the new query against the prefix, kind: attention-score}
+  - {id: normalize_decode, label: Normalize five scores, kind: attention-normalize}
+  - {id: reduce_decode, label: Reduce cached values in latent space, kind: latent-reduction}
+  - {id: emit_decode, label: Up-project the decode output, kind: output-projection}
+
+flows:
+  - {id: decode_latent_append, label: "Append cKV[4]", entity: decode_latent, stages: [store_decode_latent]}
+  - {id: decode_rope_append, label: "Append kR[4]", entity: decode_rope_key, stages: [store_decode_rope]}
+
+stages:
+  - id: project_decode_query
+    label: Project one query content and RoPE part
+    operation: project_decode
+    kind: compute
+    at: query_path
+    reads: [token4.input]
+    step: 1
+    claims: [{resource: projection_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: token4.q.nope, entity: decode_query_nope, place: query_path}
+      - {action: create, materialization: token4.q.rope, entity: decode_query_rope, place: query_path}
+
+  - id: compress_decode_kv
+    label: Down-project one token to cKV and kR
+    operation: project_decode
+    kind: compute
+    at: kv_path
+    reads: [token4.input]
+    step: 1
+    claims: [{resource: projection_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: token4.latent.work, entity: decode_latent, place: kv_path}
+      - {action: create, materialization: token4.rope.work, entity: decode_rope_key, place: kv_path}
+
+  - id: store_decode_latent
+    label: Append one normalized cKV row
+    operation: append_decode_cache
+    kind: transfer
+    link: projection_cache
+    flow: decode_latent_append
+    reads: [token4.latent.work]
+    after: [compress_decode_kv]
+    step: 2
+    claims: [{resource: cache_write, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: token4.latent.cache, entity: decode_latent, place: latent_rows, from: token4.latent.work}
+      - {action: retire, materialization: token4.latent.work}
+
+  - id: store_decode_rope
+    label: Append one rotated kR row
+    operation: append_decode_cache
+    kind: transfer
+    link: projection_cache
+    flow: decode_rope_append
+    reads: [token4.rope.work]
+    after: [compress_decode_kv]
+    step: 2
+    claims: [{resource: cache_write, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: token4.rope.cache, entity: decode_rope_key, place: rope_rows, from: token4.rope.work}
+      - {action: retire, materialization: token4.rope.work}
+
+  - id: absorb_decode_query
+    label: Transform qC[4] with key up-projection weights
+    operation: score_decode
+    kind: compute
+    at: score_path
+    reads: [token4.q.nope]
+    after: [project_decode_query]
+    step: 2
+    claims: [{resource: score_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: token4.q.absorbed, entity: decode_absorbed_query, place: score_path}
+      - {action: retire, materialization: token4.q.nope}
+
+  - id: score_decode_content
+    label: Score qC[4] against five cKV rows
+    operation: score_decode
+    kind: compute
+    at: score_path
+    reads: [token4.q.absorbed, prefix.latent.cache, token4.latent.cache]
+    after: [absorb_decode_query, store_decode_latent]
+    step: 3
+    claims: [{resource: score_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: token4.score.content, entity: decode_content_scores, place: score_path}
+      - {action: retire, materialization: token4.q.absorbed}
+
+  - id: score_decode_position
+    label: Score qR[4] against five kR rows
+    operation: score_decode
+    kind: compute
+    at: score_path
+    reads: [token4.q.rope, prefix.rope.cache, token4.rope.cache]
+    after: [project_decode_query, store_decode_rope]
+    step: 3
+    claims: [{resource: score_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: token4.score.position, entity: decode_position_scores, place: score_path}
+      - {action: retire, materialization: token4.q.rope}
+
+  - id: softmax_decode_scores
+    label: Add the five score pairs and softmax
+    operation: normalize_decode
+    kind: compute
+    at: score_path
+    reads: [token4.score.content, token4.score.position]
+    after: [score_decode_content, score_decode_position]
+    step: 4
+    claims: [{resource: softmax_pipe, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: token4.weights, entity: decode_attention_weights, place: score_path}
+      - {action: retire, materialization: token4.score.content}
+      - {action: retire, materialization: token4.score.position}
+
+  - id: reduce_decode_latents
+    label: Reduce five cKV rows to one latent context
+    operation: reduce_decode
+    kind: compute
+    at: value_path
+    reads: [token4.weights, prefix.latent.cache, token4.latent.cache]
+    after: [softmax_decode_scores]
+    step: 5
+    claims: [{resource: latent_reduce, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: token4.context.latent, entity: decode_latent_context, place: value_path}
+      - {action: retire, materialization: token4.weights}
+
+  - id: project_decode_output
+    label: Apply value up-projection and output projection
+    operation: emit_decode
+    kind: compute
+    at: value_path
+    reads: [token4.context.latent]
+    after: [reduce_decode_latents]
+    step: 6
+    claims: [{resource: output_projection, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: token4.output, entity: decode_output, place: value_path}
+      - {action: retire, materialization: token4.context.latent}
+      - {action: retire, materialization: token4.input}
+
+annotations:
+  - id: compressed-cache-question
+    label: Verify the cache representation
+    anchor: prefix.latent.cache
+    checkpoint: score_prefix
+    body: Does this step ever reconstruct a full per-head key or value tensor?
+    status: unresolved
+  - id: absorbed-score-note
+    label: Absorbed scoring path confirmed
+    anchor: score_decode_content
+    checkpoint: score_prefix
+    body: The content score is computed directly against the compressed cKV rows.
+    status: resolved
+
+checkpoints:
+  - id: prefix_ready
+    label: Four compressed prefix rows are resident
+    step: 0
+    detail: Decode starts with four cKV rows, four kR rows, and one new hidden state; full per-head keys and values are absent.
+    focus: [prefix.latent.cache, prefix.rope.cache, token4.input, cache_bytes]
+  - id: project_new_token
+    label: Project the single decode token
+    step: 1
+    detail: Query and joint KV projections run for one token while the four-token prefix cache remains unchanged.
+    focus: [project_decode_query, compress_decode_kv, projection_compute]
+  - id: append_and_absorb
+    label: Append one cache row while absorbing qC
+    step: 2
+    detail: New cKV and kR rows are copied into the cache; in parallel, qC is transformed for direct scoring against cKV.
+    focus: [store_decode_latent, store_decode_rope, absorb_decode_query, projection_cache]
+  - id: score_prefix
+    label: Score the new query against five positions
+    step: 3
+    detail: The content dot product reads five cKV rows and the position dot product reads five kR rows; no full K/V prefix is reconstructed.
+    narrative: |-
+      ## Read the compressed prefix directly
+
+      The query produces **two score terms**:
+
+      - content scores against the five `cKV` rows;
+      - positional scores against the five `kR` rows.
+
+      Their sum enters softmax. No full per-head K/V prefix is reconstructed.
+    focus: [score_decode_content, score_decode_position, token4.latent.cache, token4.rope.cache]
+  - id: normalize
+    label: Normalize five combined scores
+    step: 4
+    detail: Content and positional contributions are added and converted to one attention distribution over the four-token prefix plus the new token.
+    focus: [softmax_decode_scores, softmax_pipe]
+  - id: reduce_latent
+    label: Read the value path in latent space
+    step: 5
+    detail: Five cached cKV rows are reduced to one 512-element latent context before value expansion.
+    focus: [reduce_decode_latents, prefix.latent.cache, token4.latent.cache]
+  - id: emit_output
+    label: Up-project one decode output
+    step: 6
+    detail: The latent context passes through the value and output projections while all five compressed cache rows stay resident.
+    focus: [project_decode_output, output_projection]
+  - id: next_token_ready
+    label: Decode step is complete
+    step: 7
+    detail: One output remains and the cache has grown append-only from 4,608 to 5,760 bytes in this BF16 illustration.
+    focus: [token4.output, prefix.latent.cache, token4.latent.cache, prefix.rope.cache, token4.rope.cache, cache_bytes]
+
+view:
+  system_roots: [input, projection, cache, attention]
+  draggable: [input, projection, cache, attention]
+  timeline_resources: [projection_compute, cache_write, score_compute, softmax_pipe, latent_reduce, output_projection]
+  importance: [prefix_latent, prefix_rope_key, decode_latent, decode_rope_key, decode_output]
+  show_source: true
+  show_compiled: true

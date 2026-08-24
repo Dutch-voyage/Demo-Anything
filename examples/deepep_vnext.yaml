@@ -1,0 +1,568 @@
+version: "0.2-draft"
+id: deepep-classical-dispatch
+title: DeepEP · dispatch, experts, and combine
+description: >-
+  Four expert-parallel ranks route four top-2 tokens across two nodes. The
+  authored schedule separates layout, local and NVLink routes, RDMA forwarding,
+  expert computation, reverse combine, and final accumulation.
+
+time:
+  mode: timeline
+  unit: us
+
+places:
+  - {id: cluster, label: Two-node EP group, role: group, layout: network}
+  - {id: rank0, label: Node 0 · Rank 0 · E0, parent: cluster, role: executor, layout: grid}
+  - {id: rank1, label: Node 0 · Rank 1 · E1, parent: cluster, role: executor, layout: grid}
+  - {id: rank2, label: Node 1 · Rank 2 · E2, parent: cluster, role: executor, layout: grid}
+  - {id: rank3, label: Node 1 · Rank 3 · E3, parent: cluster, role: executor, layout: grid}
+
+resources:
+  - id: route_layout
+    label: Route layout and receive counts
+    owner: rank0
+    kind: coordination
+    capacity: {slots: 4}
+  - id: nvlink_bw
+    label: Intra-node NVLink forwarding
+    owner: nvl01
+    kind: bandwidth
+    capacity: {channels: 4}
+  - id: rdma_bw
+    label: Inter-node RDMA exchange
+    owner: rdma02
+    kind: bandwidth
+    capacity: {channels: 4}
+  - id: expert_compute
+    label: Grouped expert GEMM
+    owner: rank0
+    kind: execution
+    capacity: {slots: 4}
+  - id: combine_work
+    label: Combine and release
+    owner: rank0
+    kind: execution
+    capacity: {slots: 4}
+
+links:
+  - {id: nvl01, label: Node 0 NVLink, from: rank0, to: rank1, directed: false, resource: nvlink_bw}
+  - {id: nvl23, label: Node 1 NVLink, from: rank2, to: rank3, directed: false, resource: nvlink_bw}
+  - {id: rdma02, label: RDMA rail 0, from: rank0, to: rank2, directed: false, resource: rdma_bw}
+
+entities:
+  - {id: expert0, label: Expert E0, kind: expert, quantity: {experts: 1}}
+  - {id: expert1, label: Expert E1, kind: expert, quantity: {experts: 1}}
+  - {id: expert2, label: Expert E2, kind: expert, quantity: {experts: 1}}
+  - {id: expert3, label: Expert E3, kind: expert, quantity: {experts: 1}}
+  - {id: token0, label: T0, kind: token, quantity: {tokens: 1, bytes: 7168}, attrs: {origin: rank0, topk: [expert0, expert2]}}
+  - {id: token1, label: T1, kind: token, quantity: {tokens: 1, bytes: 7168}, attrs: {origin: rank0, topk: [expert1, expert3]}}
+  - {id: token2, label: T2, kind: token, quantity: {tokens: 1, bytes: 7168}, attrs: {origin: rank2, topk: [expert2, expert0]}}
+  - {id: token3, label: T3, kind: token, quantity: {tokens: 1, bytes: 7168}, attrs: {origin: rank2, topk: [expert3, expert1]}}
+  - {id: route0, label: Route map R0, kind: routing-state, quantity: {bytes: 256}}
+  - {id: route1, label: Route map R1, kind: routing-state, quantity: {bytes: 256}}
+  - {id: route2, label: Route map R2, kind: routing-state, quantity: {bytes: 256}}
+  - {id: route3, label: Route map R3, kind: routing-state, quantity: {bytes: 256}}
+  - {id: handle0, label: Handle R0, kind: routing-handle, quantity: {bytes: 512}}
+  - {id: handle1, label: Handle R1, kind: routing-handle, quantity: {bytes: 512}}
+  - {id: handle2, label: Handle R2, kind: routing-handle, quantity: {bytes: 512}}
+  - {id: handle3, label: Handle R3, kind: routing-handle, quantity: {bytes: 512}}
+  - {id: output0, label: O0, kind: token-output, quantity: {tokens: 1, bytes: 7168}}
+  - {id: output1, label: O1, kind: token-output, quantity: {tokens: 1, bytes: 7168}}
+  - {id: output2, label: O2, kind: token-output, quantity: {tokens: 1, bytes: 7168}}
+  - {id: output3, label: O3, kind: token-output, quantity: {tokens: 1, bytes: 7168}}
+
+initial_materializations:
+  - {id: expert0.resident, entity: expert0, place: rank0}
+  - {id: expert1.resident, entity: expert1, place: rank1}
+  - {id: expert2.resident, entity: expert2, place: rank2}
+  - {id: expert3.resident, entity: expert3, place: rank3}
+  - {id: t0.origin, entity: token0, place: rank0}
+  - {id: t1.origin, entity: token1, place: rank0}
+  - {id: t2.origin, entity: token2, place: rank2}
+  - {id: t3.origin, entity: token3, place: rank2}
+
+operations:
+  - {id: layout_op, label: Build dispatch layout, kind: routing-layout}
+  - {id: dispatch_op, label: Dispatch tokens, kind: expert-dispatch}
+  - {id: expert_op, label: Run grouped experts, kind: expert-compute}
+  - {id: combine_op, label: Return and combine outputs, kind: expert-combine}
+
+flows:
+  - {id: t1_e1_flow, label: T1 ↔ E1, stages: [dispatch_t1_e1, return_o1_e1]}
+  - {id: t3_e3_flow, label: T3 ↔ E3, stages: [dispatch_t3_e3, return_o3_e3]}
+  - {id: t0_e2_flow, label: T0 ↔ E2, stages: [dispatch_t0_e2, return_o0_e2]}
+  - {id: t2_e0_flow, label: T2 ↔ E0, stages: [dispatch_t2_e0, return_o2_e0]}
+  - {id: t1_e3_flow, label: T1 ↔ E3 via rail, stages: [dispatch_t1_rail2, dispatch_t1_e3, return_o1_rail2, return_o1_origin]}
+  - {id: t3_e1_flow, label: T3 ↔ E1 via rail, stages: [dispatch_t3_rail0, dispatch_t3_e1, return_o3_rail0, return_o3_origin]}
+
+stages:
+  - id: layout0
+    label: Build rank 0 dispatch layout
+    operation: layout_op
+    kind: control
+    at: rank0
+    start: 0.0
+    duration: 0.4
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: route0.meta, entity: route0, place: rank0}]
+  - id: layout1
+    label: Build rank 1 empty-source layout
+    operation: layout_op
+    kind: control
+    at: rank1
+    start: 0.0
+    duration: 0.4
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: route1.meta, entity: route1, place: rank1}]
+  - id: layout2
+    label: Build rank 2 dispatch layout
+    operation: layout_op
+    kind: control
+    at: rank2
+    start: 0.0
+    duration: 0.4
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: route2.meta, entity: route2, place: rank2}]
+  - id: layout3
+    label: Build rank 3 empty-source layout
+    operation: layout_op
+    kind: control
+    at: rank3
+    start: 0.0
+    duration: 0.4
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: route3.meta, entity: route3, place: rank3}]
+
+  - id: dispatch_t0_e0
+    label: Materialize T0 for local E0
+    operation: dispatch_op
+    kind: state-change
+    at: rank0
+    reads: [t0.origin, route0.meta]
+    after: [layout0]
+    start: 0.4
+    duration: 0.4
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: t0.e0, entity: token0, place: rank0, from: t0.origin}]
+  - id: dispatch_t2_e2
+    label: Materialize T2 for local E2
+    operation: dispatch_op
+    kind: state-change
+    at: rank2
+    reads: [t2.origin, route2.meta]
+    after: [layout2]
+    start: 0.4
+    duration: 0.4
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: t2.e2, entity: token2, place: rank2, from: t2.origin}]
+
+  - id: dispatch_t1_e1
+    label: Send T1 to E1 over NVLink
+    operation: dispatch_op
+    kind: transfer
+    link: nvl01
+    flow: t1_e1_flow
+    reads: [t1.origin, route0.meta]
+    after: [layout0]
+    start: 0.4
+    duration: 0.6
+    claims: [{resource: nvlink_bw, amount: {channels: 1}}]
+    effects: [{action: create, materialization: t1.e1, entity: token1, place: rank1, from: t1.origin}]
+  - id: dispatch_t3_e3
+    label: Send T3 to E3 over NVLink
+    operation: dispatch_op
+    kind: transfer
+    link: nvl23
+    flow: t3_e3_flow
+    reads: [t3.origin, route2.meta]
+    after: [layout2]
+    start: 0.4
+    duration: 0.6
+    claims: [{resource: nvlink_bw, amount: {channels: 1}}]
+    effects: [{action: create, materialization: t3.e3, entity: token3, place: rank3, from: t3.origin}]
+
+  - id: dispatch_t0_e2
+    label: Send T0 to E2 over RDMA
+    operation: dispatch_op
+    kind: transfer
+    link: rdma02
+    flow: t0_e2_flow
+    reads: [t0.origin, route0.meta]
+    after: [layout0]
+    start: 0.4
+    duration: 0.8
+    claims: [{resource: rdma_bw, amount: {channels: 1}}]
+    effects: [{action: create, materialization: t0.e2, entity: token0, place: rank2, from: t0.origin}]
+  - id: dispatch_t1_rail2
+    label: Send T1 to node 1 rail over RDMA
+    operation: dispatch_op
+    kind: transfer
+    link: rdma02
+    flow: t1_e3_flow
+    reads: [t1.origin, route0.meta]
+    after: [layout0]
+    start: 0.4
+    duration: 0.8
+    claims: [{resource: rdma_bw, amount: {channels: 1}}]
+    effects: [{action: create, materialization: t1.rail2, entity: token1, place: rank2, from: t1.origin}]
+  - id: dispatch_t2_e0
+    label: Send T2 to E0 over RDMA
+    operation: dispatch_op
+    kind: transfer
+    link: rdma02
+    flow: t2_e0_flow
+    reads: [t2.origin, route2.meta]
+    after: [layout2]
+    start: 0.4
+    duration: 0.8
+    claims: [{resource: rdma_bw, amount: {channels: 1}}]
+    effects: [{action: create, materialization: t2.e0, entity: token2, place: rank0, from: t2.origin}]
+  - id: dispatch_t3_rail0
+    label: Send T3 to node 0 rail over RDMA
+    operation: dispatch_op
+    kind: transfer
+    link: rdma02
+    flow: t3_e1_flow
+    reads: [t3.origin, route2.meta]
+    after: [layout2]
+    start: 0.4
+    duration: 0.8
+    claims: [{resource: rdma_bw, amount: {channels: 1}}]
+    effects: [{action: create, materialization: t3.rail0, entity: token3, place: rank0, from: t3.origin}]
+
+  - id: dispatch_t1_e3
+    label: Forward T1 from rail to E3
+    operation: dispatch_op
+    kind: transfer
+    link: nvl23
+    flow: t1_e3_flow
+    reads: [t1.rail2]
+    after: [dispatch_t1_rail2]
+    start: 1.2
+    duration: 0.5
+    claims: [{resource: nvlink_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: t1.e3, entity: token1, place: rank3, from: t1.rail2}
+      - {action: retire, materialization: t1.rail2}
+  - id: dispatch_t3_e1
+    label: Forward T3 from rail to E1
+    operation: dispatch_op
+    kind: transfer
+    link: nvl01
+    flow: t3_e1_flow
+    reads: [t3.rail0]
+    after: [dispatch_t3_rail0]
+    start: 1.2
+    duration: 0.5
+    claims: [{resource: nvlink_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: t3.e1, entity: token3, place: rank1, from: t3.rail0}
+      - {action: retire, materialization: t3.rail0}
+
+  - id: ready0
+    label: Rank 0 receive counts and handle ready
+    operation: dispatch_op
+    kind: sync
+    at: rank0
+    reads: [route0.meta, t0.e0, t2.e0]
+    after: [dispatch_t0_e0, dispatch_t2_e0]
+    start: 1.7
+    duration: 0.2
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: handle0.ready, entity: handle0, place: rank0}]
+  - id: ready1
+    label: Rank 1 receive counts and handle ready
+    operation: dispatch_op
+    kind: sync
+    at: rank1
+    reads: [route1.meta, t1.e1, t3.e1]
+    after: [dispatch_t1_e1, dispatch_t3_e1]
+    start: 1.7
+    duration: 0.2
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: handle1.ready, entity: handle1, place: rank1}]
+  - id: ready2
+    label: Rank 2 receive counts and handle ready
+    operation: dispatch_op
+    kind: sync
+    at: rank2
+    reads: [route2.meta, t0.e2, t2.e2]
+    after: [dispatch_t0_e2, dispatch_t2_e2]
+    start: 1.7
+    duration: 0.2
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: handle2.ready, entity: handle2, place: rank2}]
+  - id: ready3
+    label: Rank 3 receive counts and handle ready
+    operation: dispatch_op
+    kind: sync
+    at: rank3
+    reads: [route3.meta, t1.e3, t3.e3]
+    after: [dispatch_t1_e3, dispatch_t3_e3]
+    start: 1.7
+    duration: 0.2
+    claims: [{resource: route_layout, amount: {slots: 1}}]
+    effects: [{action: create, materialization: handle3.ready, entity: handle3, place: rank3}]
+
+  - id: expert0_compute
+    label: Run E0 on T0 and T2
+    operation: expert_op
+    kind: compute
+    at: rank0
+    reads: [expert0.resident, handle0.ready, t0.e0, t2.e0]
+    after: [ready0]
+    start: 1.9
+    duration: 1.1
+    claims: [{resource: expert_compute, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: t0.e0}
+      - {action: retire, materialization: t2.e0}
+      - {action: create, materialization: o0.e0, entity: output0, place: rank0}
+      - {action: create, materialization: o2.e0, entity: output2, place: rank0}
+  - id: expert1_compute
+    label: Run E1 on T1 and T3
+    operation: expert_op
+    kind: compute
+    at: rank1
+    reads: [expert1.resident, handle1.ready, t1.e1, t3.e1]
+    after: [ready1]
+    start: 1.9
+    duration: 1.1
+    claims: [{resource: expert_compute, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: t1.e1}
+      - {action: retire, materialization: t3.e1}
+      - {action: create, materialization: o1.e1, entity: output1, place: rank1}
+      - {action: create, materialization: o3.e1, entity: output3, place: rank1}
+  - id: expert2_compute
+    label: Run E2 on T0 and T2
+    operation: expert_op
+    kind: compute
+    at: rank2
+    reads: [expert2.resident, handle2.ready, t0.e2, t2.e2]
+    after: [ready2]
+    start: 1.9
+    duration: 1.1
+    claims: [{resource: expert_compute, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: t0.e2}
+      - {action: retire, materialization: t2.e2}
+      - {action: create, materialization: o0.e2, entity: output0, place: rank2}
+      - {action: create, materialization: o2.e2, entity: output2, place: rank2}
+  - id: expert3_compute
+    label: Run E3 on T1 and T3
+    operation: expert_op
+    kind: compute
+    at: rank3
+    reads: [expert3.resident, handle3.ready, t1.e3, t3.e3]
+    after: [ready3]
+    start: 1.9
+    duration: 1.1
+    claims: [{resource: expert_compute, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: t1.e3}
+      - {action: retire, materialization: t3.e3}
+      - {action: create, materialization: o1.e3, entity: output1, place: rank3}
+      - {action: create, materialization: o3.e3, entity: output3, place: rank3}
+
+  - id: return_o1_e1
+    label: Return O1 from E1 over NVLink
+    operation: combine_op
+    kind: transfer
+    link: nvl01
+    flow: t1_e1_flow
+    reads: [o1.e1, handle1.ready]
+    after: [expert1_compute]
+    start: 3.0
+    duration: 0.5
+    claims: [{resource: nvlink_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: o1.at0, entity: output1, place: rank0, from: o1.e1}
+      - {action: retire, materialization: o1.e1}
+  - id: return_o3_e3
+    label: Return O3 from E3 over NVLink
+    operation: combine_op
+    kind: transfer
+    link: nvl23
+    flow: t3_e3_flow
+    reads: [o3.e3, handle3.ready]
+    after: [expert3_compute]
+    start: 3.0
+    duration: 0.5
+    claims: [{resource: nvlink_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: o3.at2, entity: output3, place: rank2, from: o3.e3}
+      - {action: retire, materialization: o3.e3}
+  - id: return_o0_e2
+    label: Return O0 from E2 over RDMA
+    operation: combine_op
+    kind: transfer
+    link: rdma02
+    flow: t0_e2_flow
+    reads: [o0.e2, handle2.ready]
+    after: [expert2_compute]
+    start: 3.0
+    duration: 0.8
+    claims: [{resource: rdma_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: o0.at0, entity: output0, place: rank0, from: o0.e2}
+      - {action: retire, materialization: o0.e2}
+  - id: return_o2_e0
+    label: Return O2 from E0 over RDMA
+    operation: combine_op
+    kind: transfer
+    link: rdma02
+    flow: t2_e0_flow
+    reads: [o2.e0, handle0.ready]
+    after: [expert0_compute]
+    start: 3.0
+    duration: 0.8
+    claims: [{resource: rdma_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: o2.at2, entity: output2, place: rank2, from: o2.e0}
+      - {action: retire, materialization: o2.e0}
+
+  - id: return_o1_rail2
+    label: Forward O1 from E3 to node 1 rail
+    operation: combine_op
+    kind: transfer
+    link: nvl23
+    flow: t1_e3_flow
+    reads: [o1.e3, handle3.ready]
+    after: [expert3_compute]
+    start: 3.0
+    duration: 0.5
+    claims: [{resource: nvlink_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: o1.rail2, entity: output1, place: rank2, from: o1.e3}
+      - {action: retire, materialization: o1.e3}
+  - id: return_o3_rail0
+    label: Forward O3 from E1 to node 0 rail
+    operation: combine_op
+    kind: transfer
+    link: nvl01
+    flow: t3_e1_flow
+    reads: [o3.e1, handle1.ready]
+    after: [expert1_compute]
+    start: 3.0
+    duration: 0.5
+    claims: [{resource: nvlink_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: o3.rail0, entity: output3, place: rank0, from: o3.e1}
+      - {action: retire, materialization: o3.e1}
+  - id: return_o1_origin
+    label: Return forwarded O1 over RDMA
+    operation: combine_op
+    kind: transfer
+    link: rdma02
+    flow: t1_e3_flow
+    reads: [o1.rail2]
+    after: [return_o1_rail2]
+    start: 3.5
+    duration: 0.8
+    claims: [{resource: rdma_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: o1.remote0, entity: output1, place: rank0, from: o1.rail2}
+      - {action: retire, materialization: o1.rail2}
+  - id: return_o3_origin
+    label: Return forwarded O3 over RDMA
+    operation: combine_op
+    kind: transfer
+    link: rdma02
+    flow: t3_e1_flow
+    reads: [o3.rail0]
+    after: [return_o3_rail0]
+    start: 3.5
+    duration: 0.8
+    claims: [{resource: rdma_bw, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: o3.remote2, entity: output3, place: rank2, from: o3.rail0}
+      - {action: retire, materialization: o3.rail0}
+
+  - id: combine0
+    label: Restore T0/T1 order and sum top-2 outputs
+    operation: combine_op
+    kind: compute
+    at: rank0
+    reads: [handle0.ready, t0.origin, t1.origin, o0.e0, o0.at0, o1.at0, o1.remote0]
+    after: [return_o0_e2, return_o1_e1, return_o1_origin]
+    start: 4.3
+    duration: 0.6
+    claims: [{resource: combine_work, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: o0.final, entity: output0, place: rank0}
+      - {action: create, materialization: o1.final, entity: output1, place: rank0}
+      - {action: retire, materialization: o0.e0}
+      - {action: retire, materialization: o0.at0}
+      - {action: retire, materialization: o1.at0}
+      - {action: retire, materialization: o1.remote0}
+      - {action: retire, materialization: t0.origin}
+      - {action: retire, materialization: t1.origin}
+      - {action: retire, materialization: route0.meta}
+      - {action: retire, materialization: handle0.ready}
+  - id: combine2
+    label: Restore T2/T3 order and sum top-2 outputs
+    operation: combine_op
+    kind: compute
+    at: rank2
+    reads: [handle2.ready, t2.origin, t3.origin, o2.e2, o2.at2, o3.at2, o3.remote2]
+    after: [return_o2_e0, return_o3_e3, return_o3_origin]
+    start: 4.3
+    duration: 0.6
+    claims: [{resource: combine_work, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: o2.final, entity: output2, place: rank2}
+      - {action: create, materialization: o3.final, entity: output3, place: rank2}
+      - {action: retire, materialization: o2.e2}
+      - {action: retire, materialization: o2.at2}
+      - {action: retire, materialization: o3.at2}
+      - {action: retire, materialization: o3.remote2}
+      - {action: retire, materialization: t2.origin}
+      - {action: retire, materialization: t3.origin}
+      - {action: retire, materialization: route2.meta}
+      - {action: retire, materialization: handle2.ready}
+  - id: release1
+    label: Release rank 1 routing state
+    operation: combine_op
+    kind: state-change
+    at: rank1
+    reads: [route1.meta, handle1.ready]
+    after: [return_o1_e1, return_o3_rail0]
+    start: 4.3
+    duration: 0.6
+    claims: [{resource: combine_work, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: route1.meta}
+      - {action: retire, materialization: handle1.ready}
+  - id: release3
+    label: Release rank 3 routing state
+    operation: combine_op
+    kind: state-change
+    at: rank3
+    reads: [route3.meta, handle3.ready]
+    after: [return_o3_e3, return_o1_rail2]
+    start: 4.3
+    duration: 0.6
+    claims: [{resource: combine_work, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: route3.meta}
+      - {action: retire, materialization: handle3.ready}
+
+checkpoints:
+  - {id: inputs, label: Tokens and experts are resident, at: 0.0, detail: "T0/T1 originate on rank 0; T2/T3 originate on rank 2. Every token has two selected experts.", focus: [t0.origin, t2.origin]}
+  - {id: dispatch, label: Dispatch fans out token copies, at: 0.4, detail: "Local materialization, NVLink transfer, and four RDMA route legs begin together after layout.", focus: [dispatch_t0_e0, dispatch_t1_e1, dispatch_t0_e2, rdma_bw]}
+  - {id: forwarding, label: RDMA arrivals forward inside each node, at: 1.2, detail: "Direct remote routes are placed; T1 and T3 continue from the rail GPU to their expert rank over NVLink.", focus: [dispatch_t1_e3, dispatch_t3_e1]}
+  - {id: grouped, label: Tokens are grouped by local expert, at: 1.7, detail: "Each rank now owns two expert-input copies and resolves its receive count and routing handle.", focus: [ready0, ready1, ready2, ready3]}
+  - {id: experts, label: Four experts compute in parallel, at: 1.9, detail: "The received grouping feeds one local expert per rank; communication handles remain live for combine.", focus: [expert0_compute, expert1_compute, expert2_compute, expert3_compute]}
+  - {id: return, label: Combine reverses the routes, at: 3.0, detail: "Local expert contributions stay in place while NVLink and RDMA return remote contributions toward their origin ranks.", focus: [return_o1_e1, return_o0_e2, return_o1_rail2]}
+  - {id: reverse_forward, label: Forwarded outputs cross the RDMA rail, at: 3.5, detail: "O1 and O3 complete the second leg of their reverse two-hop routes while direct RDMA returns remain active.", focus: [return_o1_origin, return_o3_origin]}
+  - {id: accumulate, label: Restore order and accumulate top-2 outputs, at: 4.3, detail: "Ranks 0 and 2 use their dispatch handles to assemble original order and sum the two expert contributions per token.", focus: [combine0, combine2]}
+  - {id: done, label: DeepEP round trip is complete, at: 4.9, detail: "Only resident experts and the four combined outputs remain; route copies and handles are released.", focus: [o0.final, o1.final, o2.final, o3.final]}
+
+view:
+  system_roots: [rank0, rank1, rank2, rank3]
+  draggable: [rank0, rank1, rank2, rank3]
+  timeline_resources: [route_layout, nvlink_bw, rdma_bw, expert_compute, combine_work]
+  importance: [handle0.ready, handle2.ready, o0.final, o1.final, o2.final, o3.final]
+  show_source: true
+  show_compiled: true

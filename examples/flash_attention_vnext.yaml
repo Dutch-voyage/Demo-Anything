@@ -1,0 +1,411 @@
+version: "0.2-draft"
+id: flash-attention-v2-tile
+title: FlashAttention-2 · one query tile
+description: >-
+  One Q tile streams across three K/V tiles. The authored schedule shows copy and
+  compute overlap, online-softmax state, double-buffer reuse, accumulation, and
+  the final output store.
+
+time:
+  mode: timeline
+  unit: us
+
+places:
+  - {id: gpu, label: GPU thread block, role: group, layout: hierarchy}
+  - {id: hbm, label: HBM, parent: gpu, role: storage, layout: memory}
+  - {id: smem, label: Shared memory, parent: gpu, role: buffer, layout: memory}
+  - {id: smem_q, label: Q slot, parent: smem, role: buffer, layout: memory}
+  - {id: smem_kv0, label: KV buffer 0, parent: smem, role: buffer, layout: memory}
+  - {id: smem_kv1, label: KV buffer 1, parent: smem, role: buffer, layout: memory}
+  - {id: compute, label: SM execution, parent: gpu, role: executor, layout: grid}
+  - {id: mma, label: Tensor core, parent: compute, role: executor, layout: grid}
+  - {id: softmax, label: Online softmax, parent: compute, role: executor, layout: grid}
+  - {id: registers, label: Registers, parent: compute, role: register, layout: memory}
+
+resources:
+  - id: smem_bytes
+    label: Shared-memory residency
+    owner: smem
+    kind: storage
+    capacity: {bytes: 131072}
+  - id: copy_engine
+    label: HBM ↔ shared-memory copy
+    owner: hbm_smem
+    kind: bandwidth
+    capacity: {channels: 1}
+  - id: tensor_core
+    label: Tensor-core pipeline
+    owner: mma
+    kind: execution
+    capacity: {slots: 1}
+  - id: global_store
+    label: Register → HBM store
+    owner: registers_hbm
+    kind: bandwidth
+    capacity: {channels: 1}
+  - id: softmax_pipe
+    label: Softmax / scalar pipeline
+    owner: softmax
+    kind: execution
+    capacity: {slots: 1}
+  - id: lifecycle
+    label: Lifecycle and cleanup
+    owner: registers
+    kind: coordination
+    capacity: {events: 1}
+
+links:
+  - id: hbm_smem
+    label: HBM ↔ shared memory
+    from: hbm
+    to: smem
+    directed: false
+    resource: copy_engine
+  - id: registers_hbm
+    label: Registers → HBM
+    from: registers
+    to: hbm
+    directed: true
+    resource: global_store
+
+entities:
+  - {id: q, label: Q, kind: tensor-tile, quantity: {bytes: 32768}, attrs: {shape: [128, 128], dtype: fp16}}
+  - {id: k0, label: K0, kind: tensor-tile, quantity: {bytes: 32768}}
+  - {id: v0, label: V0, kind: tensor-tile, quantity: {bytes: 32768}}
+  - {id: k1, label: K1, kind: tensor-tile, quantity: {bytes: 32768}}
+  - {id: v1, label: V1, kind: tensor-tile, quantity: {bytes: 32768}}
+  - {id: k2, label: K2, kind: tensor-tile, quantity: {bytes: 32768}}
+  - {id: v2, label: V2, kind: tensor-tile, quantity: {bytes: 32768}}
+  - {id: score0, label: S0, kind: temporary-tile, quantity: {bytes: 16384}}
+  - {id: prob0, label: P0, kind: temporary-tile, quantity: {bytes: 16384}}
+  - {id: score1, label: S1, kind: temporary-tile, quantity: {bytes: 16384}}
+  - {id: prob1, label: P1, kind: temporary-tile, quantity: {bytes: 16384}}
+  - {id: score2, label: S2, kind: temporary-tile, quantity: {bytes: 16384}}
+  - {id: prob2, label: P2, kind: temporary-tile, quantity: {bytes: 16384}}
+  - {id: online, label: m / ℓ, kind: state, quantity: {bytes: 1024}}
+  - {id: output, label: O, kind: tensor-tile, quantity: {bytes: 32768}}
+
+initial_materializations:
+  - {id: q.hbm, entity: q, place: hbm}
+  - {id: k0.hbm, entity: k0, place: hbm}
+  - {id: v0.hbm, entity: v0, place: hbm}
+  - {id: k1.hbm, entity: k1, place: hbm}
+  - {id: v1.hbm, entity: v1, place: hbm}
+  - {id: k2.hbm, entity: k2, place: hbm}
+  - {id: v2.hbm, entity: v2, place: hbm}
+  - {id: online.reg, entity: online, place: registers}
+
+operations:
+  - {id: prologue, label: Prologue, kind: setup}
+  - {id: tile0, label: Tile iteration 0, kind: tile-iteration, tags: {iteration: 0}}
+  - {id: tile1, label: Tile iteration 1, kind: tile-iteration, tags: {iteration: 1}}
+  - {id: tile2, label: Tile iteration 2, kind: tile-iteration, tags: {iteration: 2}}
+  - {id: epilogue, label: Normalize and store, kind: epilogue}
+
+flows:
+  - {id: q_flow, label: Load Q, entity: q, stages: [load_q]}
+  - {id: k0_flow, label: Load K0, entity: k0, stages: [load_k0]}
+  - {id: v0_flow, label: Load V0, entity: v0, stages: [load_v0]}
+  - {id: k1_flow, label: Prefetch K1, entity: k1, stages: [load_k1]}
+  - {id: v1_flow, label: Prefetch V1, entity: v1, stages: [load_v1]}
+  - {id: k2_flow, label: Prefetch K2, entity: k2, stages: [load_k2]}
+  - {id: v2_flow, label: Prefetch V2, entity: v2, stages: [load_v2]}
+  - {id: output_flow, label: Store O, entity: output, stages: [store_output]}
+
+stages:
+  - id: load_q
+    label: Copy Q into its shared-memory slot
+    operation: prologue
+    kind: transfer
+    link: hbm_smem
+    flow: q_flow
+    reads: [q.hbm]
+    start: 0.1
+    duration: 0.5
+    claims: [{resource: copy_engine, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: q.smem, entity: q, place: smem_q, from: q.hbm}
+
+  - id: load_k0
+    label: Copy K0 into buffer 0
+    operation: prologue
+    kind: transfer
+    link: hbm_smem
+    flow: k0_flow
+    reads: [k0.hbm]
+    after: [load_q]
+    start: 0.6
+    duration: 0.4
+    claims: [{resource: copy_engine, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: k0.buf0, entity: k0, place: smem_kv0, from: k0.hbm}
+
+  - id: load_v0
+    label: Copy V0 into buffer 0
+    operation: prologue
+    kind: transfer
+    link: hbm_smem
+    flow: v0_flow
+    reads: [v0.hbm]
+    after: [load_k0]
+    start: 1.0
+    duration: 0.4
+    claims: [{resource: copy_engine, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: v0.buf0, entity: v0, place: smem_kv0, from: v0.hbm}
+
+  - id: qk0
+    label: Q × K0ᵀ
+    operation: tile0
+    kind: compute
+    at: mma
+    reads: [q.smem, k0.buf0]
+    after: [load_q, load_k0]
+    start: 1.4
+    duration: 1.0
+    claims: [{resource: tensor_core, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: s0.reg, entity: score0, place: registers}
+      - {action: retire, materialization: k0.buf0}
+
+  - id: load_k1
+    label: Prefetch K1 into buffer 1
+    operation: tile0
+    kind: transfer
+    link: hbm_smem
+    flow: k1_flow
+    reads: [k1.hbm]
+    after: [load_v0]
+    start: 1.6
+    duration: 0.4
+    claims: [{resource: copy_engine, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: k1.buf1, entity: k1, place: smem_kv1, from: k1.hbm}
+
+  - id: load_v1
+    label: Prefetch V1 into buffer 1
+    operation: tile0
+    kind: transfer
+    link: hbm_smem
+    flow: v1_flow
+    reads: [v1.hbm]
+    after: [load_k1]
+    start: 2.0
+    duration: 0.4
+    claims: [{resource: copy_engine, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: v1.buf1, entity: v1, place: smem_kv1, from: v1.hbm}
+
+  - id: softmax0
+    label: Update online softmax 0
+    operation: tile0
+    kind: compute
+    at: softmax
+    reads: [s0.reg, online.reg]
+    after: [qk0]
+    start: 2.4
+    duration: 0.4
+    claims: [{resource: softmax_pipe, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: s0.reg}
+      - {action: create, materialization: p0.reg, entity: prob0, place: registers}
+      - {action: update, materialization: online.reg, write: replace, attrs: {iteration: 0}}
+
+  - id: pv0
+    label: P0 × V0 and initialize O
+    operation: tile0
+    kind: compute
+    at: mma
+    reads: [p0.reg, v0.buf0]
+    after: [softmax0, load_v0]
+    start: 2.8
+    duration: 0.9
+    claims: [{resource: tensor_core, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: p0.reg}
+      - {action: retire, materialization: v0.buf0}
+      - {action: create, materialization: output.acc, entity: output, place: registers}
+
+  - id: qk1
+    label: Q × K1ᵀ
+    operation: tile1
+    kind: compute
+    at: mma
+    reads: [q.smem, k1.buf1]
+    after: [pv0, load_k1]
+    start: 3.7
+    duration: 1.0
+    claims: [{resource: tensor_core, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: s1.reg, entity: score1, place: registers}
+      - {action: retire, materialization: k1.buf1}
+
+  - id: load_k2
+    label: Prefetch K2 into reused buffer 0
+    operation: tile1
+    kind: transfer
+    link: hbm_smem
+    flow: k2_flow
+    reads: [k2.hbm]
+    after: [pv0]
+    start: 3.9
+    duration: 0.4
+    claims: [{resource: copy_engine, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: k2.buf0, entity: k2, place: smem_kv0, from: k2.hbm}
+
+  - id: load_v2
+    label: Prefetch V2 into reused buffer 0
+    operation: tile1
+    kind: transfer
+    link: hbm_smem
+    flow: v2_flow
+    reads: [v2.hbm]
+    after: [load_k2]
+    start: 4.3
+    duration: 0.4
+    claims: [{resource: copy_engine, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: v2.buf0, entity: v2, place: smem_kv0, from: v2.hbm}
+
+  - id: softmax1
+    label: Update online softmax 1
+    operation: tile1
+    kind: compute
+    at: softmax
+    reads: [s1.reg, online.reg]
+    after: [qk1]
+    start: 4.7
+    duration: 0.4
+    claims: [{resource: softmax_pipe, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: s1.reg}
+      - {action: create, materialization: p1.reg, entity: prob1, place: registers}
+      - {action: update, materialization: online.reg, write: replace, attrs: {iteration: 1}}
+
+  - id: pv1
+    label: Accumulate P1 × V1
+    operation: tile1
+    kind: compute
+    at: mma
+    reads: [p1.reg, v1.buf1, output.acc]
+    after: [softmax1, load_v1]
+    start: 5.1
+    duration: 0.9
+    claims: [{resource: tensor_core, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: p1.reg}
+      - {action: retire, materialization: v1.buf1}
+      - {action: update, materialization: output.acc, write: accumulate, attrs: {iterations: 2}}
+
+  - id: qk2
+    label: Q × K2ᵀ
+    operation: tile2
+    kind: compute
+    at: mma
+    reads: [q.smem, k2.buf0]
+    after: [pv1, load_k2]
+    start: 6.0
+    duration: 1.0
+    claims: [{resource: tensor_core, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: s2.reg, entity: score2, place: registers}
+      - {action: retire, materialization: k2.buf0}
+
+  - id: softmax2
+    label: Update online softmax 2
+    operation: tile2
+    kind: compute
+    at: softmax
+    reads: [s2.reg, online.reg]
+    after: [qk2]
+    start: 7.0
+    duration: 0.4
+    claims: [{resource: softmax_pipe, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: s2.reg}
+      - {action: create, materialization: p2.reg, entity: prob2, place: registers}
+      - {action: update, materialization: online.reg, write: replace, attrs: {iteration: 2}}
+
+  - id: pv2
+    label: Accumulate P2 × V2
+    operation: tile2
+    kind: compute
+    at: mma
+    reads: [p2.reg, v2.buf0, output.acc]
+    after: [softmax2, load_v2]
+    start: 7.4
+    duration: 0.9
+    claims: [{resource: tensor_core, amount: {slots: 1}}]
+    effects:
+      - {action: retire, materialization: p2.reg}
+      - {action: retire, materialization: v2.buf0}
+      - {action: update, materialization: output.acc, write: accumulate, attrs: {iterations: 3}}
+
+  - id: normalize
+    label: Final normalization
+    operation: epilogue
+    kind: compute
+    at: softmax
+    reads: [output.acc, online.reg]
+    after: [pv2]
+    start: 8.3
+    duration: 0.5
+    claims: [{resource: softmax_pipe, amount: {slots: 1}}]
+    effects:
+      - {action: update, materialization: output.acc, write: replace, attrs: {normalized: true}}
+
+  - id: store_output
+    label: Copy normalized O to HBM
+    operation: epilogue
+    kind: transfer
+    link: registers_hbm
+    flow: output_flow
+    reads: [output.acc]
+    after: [normalize]
+    start: 8.8
+    duration: 0.6
+    claims: [{resource: global_store, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: output.hbm, entity: output, place: hbm, from: output.acc}
+
+  - id: cleanup
+    label: Release block-local state
+    operation: epilogue
+    kind: state-change
+    at: registers
+    reads: [q.smem, output.acc, online.reg]
+    after: [store_output]
+    start: 9.4
+    duration: 0.2
+    claims: [{resource: lifecycle, amount: {events: 1}}]
+    effects:
+      - {action: retire, materialization: q.smem}
+      - {action: retire, materialization: output.acc}
+      - {action: retire, materialization: online.reg}
+
+checkpoints:
+  - {id: ready, label: Inputs are resident in HBM, at: 0.0, detail: "Q and all K/V tiles begin as durable HBM materializations.", focus: [hbm]}
+  - {id: load_first_tile, label: Load the first K/V tile, at: 0.6, detail: "Q has been copied into its shared-memory slot; K0 now uses the copy engine.", focus: [load_k0, q.smem]}
+  - {id: first_qk, label: Compute QK for tile 0, at: 1.4, detail: "Q, K0, and V0 are resident. The first tensor-core stage starts.", focus: [qk0, smem_kv0]}
+  - {id: overlap_prefetch, label: Prefetch overlaps QK, at: 2.0, detail: "V1 is copied into buffer 1 while QK0 remains active.", focus: [qk0, load_v1, smem_bytes]}
+  - {id: first_softmax, label: Update online softmax, at: 2.4, detail: "K0 is released, S0 is created, and buffer 1 is ready.", focus: [softmax0, online.reg]}
+  - {id: first_pv, label: Initialize the output accumulator, at: 2.8, detail: "P0 and V0 feed the tensor core; the first O accumulator appears on completion.", focus: [pv0, v0.buf0]}
+  - {id: second_qk, label: Reuse compute while refilling buffer 0, at: 3.7, detail: "QK1 starts as buffer 0 becomes available for K2/V2.", focus: [qk1, load_k2]}
+  - {id: second_softmax, label: Update online softmax for tile 1, at: 4.7, detail: "K1 is released and the second probability tile is formed.", focus: [softmax1, online.reg]}
+  - {id: second_pv, label: Accumulate the second value tile, at: 5.1, detail: "P1V1 updates the existing output accumulator.", focus: [pv1, output.acc]}
+  - {id: final_qk, label: Compute QK for tile 2, at: 6.0, detail: "The last buffered K/V pair is ready; no further prefetch is needed.", focus: [qk2, smem_kv0]}
+  - {id: final_softmax, label: Complete the online softmax state, at: 7.0, detail: "The final score tile updates the running maximum and normalization sum.", focus: [softmax2, online.reg]}
+  - {id: final_pv, label: Accumulate the final value tile, at: 7.4, detail: "P2V2 completes the unnormalized output accumulator.", focus: [pv2, output.acc]}
+  - {id: normalize_output, label: Normalize the output, at: 8.3, detail: "The epilogue applies the final online-softmax normalization.", focus: [normalize, output.acc]}
+  - {id: write_output, label: Store O while retaining the accumulator, at: 8.8, detail: "Copy semantics create output.hbm; the register accumulator remains until cleanup.", focus: [store_output, output.acc]}
+  - {id: release_local, label: Release block-local state, at: 9.4, detail: "The durable HBM inputs and output remain while local materializations are retired.", focus: [cleanup, output.hbm]}
+  - {id: done, label: FlashAttention tile is complete, at: 9.6, detail: "HBM contains the original inputs and the new normalized output.", focus: [output.hbm]}
+
+view:
+  system_roots: [hbm, smem, compute]
+  draggable: [hbm, smem, compute]
+  timeline_resources: [copy_engine, tensor_core, softmax_pipe, global_store, lifecycle]
+  importance: [q.smem, online.reg, output.acc, output.hbm, smem_bytes]
+  show_source: true
+  show_compiled: true

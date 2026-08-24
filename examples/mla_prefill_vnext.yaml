@@ -1,0 +1,329 @@
+version: "0.2-draft"
+id: mla-prefill
+title: MLA prefill · build and consume a compressed prompt cache
+description: >-
+  Four prompt tokens pass through one absorbed Multi-head Latent Attention layer.
+  The authored steps show batched query/KV projection, separate latent-content
+  and RoPE cache writes, two-part score construction, causal softmax, reduction
+  in latent space, and output up-projection. This is an explanatory schedule,
+  not measured kernel timing.
+
+time:
+  mode: steps
+
+places:
+  - {id: input, label: Prompt hidden states, role: storage, layout: memory}
+  - {id: projection, label: MLA projections, role: executor, layout: grid}
+  - {id: query_path, label: Query path, parent: projection, role: executor, layout: grid}
+  - {id: kv_path, label: KV compression path, parent: projection, role: executor, layout: grid}
+  - {id: cache, label: Compressed KV cache, role: storage, layout: memory}
+  - {id: latent_rows, label: cKV rows · 512 BF16/token, parent: cache, role: buffer, layout: memory}
+  - {id: rope_rows, label: kR rows · 64 BF16/token, parent: cache, role: buffer, layout: memory}
+  - {id: attention, label: Absorbed attention, role: executor, layout: grid}
+  - {id: score_path, label: Score and softmax path, parent: attention, role: executor, layout: grid}
+  - {id: value_path, label: Latent value and output path, parent: attention, role: executor, layout: grid}
+
+resources:
+  - id: projection_compute
+    label: Query and KV projection
+    owner: projection
+    kind: execution
+    capacity: {slots: 2}
+  - id: cache_write
+    label: Compressed-cache writes
+    owner: projection_cache
+    kind: bandwidth
+    capacity: {channels: 2}
+  - id: cache_bytes
+    label: Compressed-cache residency
+    owner: cache
+    kind: storage
+    capacity: {bytes: 8192}
+  - id: score_compute
+    label: Content and position scores
+    owner: score_path
+    kind: execution
+    capacity: {slots: 2}
+  - id: softmax_pipe
+    label: Causal combine and softmax
+    owner: score_path
+    kind: execution
+    capacity: {slots: 1}
+  - id: latent_reduce
+    label: Weighted latent reduction
+    owner: value_path
+    kind: execution
+    capacity: {slots: 1}
+  - id: output_projection
+    label: Value and output projection
+    owner: value_path
+    kind: execution
+    capacity: {slots: 1}
+
+links:
+  - id: projection_cache
+    label: Append cKV and kR
+    from: projection
+    to: cache
+    directed: true
+    resource: cache_write
+  - id: query_to_attention
+    label: Absorbed query path
+    from: projection
+    to: attention
+    directed: true
+  - id: cache_to_attention
+    label: Read compressed rows
+    from: cache
+    to: attention
+    directed: true
+
+entities:
+  - id: prompt_hidden
+    label: H[0:4]
+    kind: hidden-state-batch
+    quantity: {tokens: 4, elements: 28672, bytes: 57344}
+    attrs: {shape: [4, 7168], dtype: bf16}
+  - id: prompt_query_nope
+    label: qC[0:4]
+    kind: query-content-batch
+    quantity: {tokens: 4}
+    attrs: {per_head_dimension: 128}
+  - id: prompt_query_rope
+    label: qR[0:4]
+    kind: query-position-batch
+    quantity: {tokens: 4}
+    attrs: {per_head_dimension: 64, encoding: RoPE}
+  - id: prompt_latent
+    label: cKV[0:4]
+    kind: compressed-kv-batch
+    quantity: {bytes: 4096}
+    attrs: {tokens: 4, elements: 2048, per_token_dimension: 512, dtype: bf16}
+  - id: prompt_rope_key
+    label: kR[0:4]
+    kind: position-key-batch
+    quantity: {bytes: 512}
+    attrs: {tokens: 4, elements: 256, per_token_dimension: 64, dtype: bf16, encoding: RoPE}
+  - id: prompt_absorbed_query
+    label: qC · WUK
+    kind: absorbed-query-batch
+    quantity: {tokens: 4}
+    attrs: {content_dimension: 512}
+  - id: prompt_content_scores
+    label: Content scores
+    kind: score-partial
+    quantity: {causal_pairs: 10}
+  - id: prompt_position_scores
+    label: Position scores
+    kind: score-partial
+    quantity: {causal_pairs: 10}
+  - id: prompt_attention_weights
+    label: Causal attention P
+    kind: attention-weights
+    quantity: {causal_pairs: 10}
+  - id: prompt_latent_context
+    label: P · cKV
+    kind: latent-context-batch
+    quantity: {tokens: 4, elements: 2048}
+  - id: prompt_output
+    label: MLA output[0:4]
+    kind: hidden-state-batch
+    quantity: {tokens: 4, elements: 28672, bytes: 57344}
+
+initial_materializations:
+  - {id: prompt.input, entity: prompt_hidden, place: input}
+
+operations:
+  - {id: project_prompt, label: Project prompt queries and compressed KV, kind: projection}
+  - {id: build_prompt_cache, label: Build compressed prompt cache, kind: cache-fill}
+  - {id: score_prompt, label: Score prompt in content and position spaces, kind: attention-score}
+  - {id: normalize_prompt, label: Apply causal mask and softmax, kind: attention-normalize}
+  - {id: reduce_prompt, label: Reduce values in latent space, kind: latent-reduction}
+  - {id: emit_prompt, label: Up-project MLA output, kind: output-projection}
+
+flows:
+  - {id: prompt_latent_fill, label: Write prompt cKV rows, entity: prompt_latent, stages: [store_prompt_latent]}
+  - {id: prompt_rope_fill, label: Write prompt kR rows, entity: prompt_rope_key, stages: [store_prompt_rope]}
+
+stages:
+  - id: project_prompt_query
+    label: Project four query content and RoPE parts
+    operation: project_prompt
+    kind: compute
+    at: query_path
+    reads: [prompt.input]
+    step: 1
+    claims: [{resource: projection_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: prompt.q.nope, entity: prompt_query_nope, place: query_path}
+      - {action: create, materialization: prompt.q.rope, entity: prompt_query_rope, place: query_path}
+
+  - id: compress_prompt_kv
+    label: Down-project four tokens to cKV and kR
+    operation: project_prompt
+    kind: compute
+    at: kv_path
+    reads: [prompt.input]
+    step: 1
+    claims: [{resource: projection_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: prompt.latent.work, entity: prompt_latent, place: kv_path}
+      - {action: create, materialization: prompt.rope.work, entity: prompt_rope_key, place: kv_path}
+
+  - id: store_prompt_latent
+    label: Append four normalized cKV rows
+    operation: build_prompt_cache
+    kind: transfer
+    link: projection_cache
+    flow: prompt_latent_fill
+    reads: [prompt.latent.work]
+    after: [compress_prompt_kv]
+    step: 2
+    claims: [{resource: cache_write, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: prompt.latent.cache, entity: prompt_latent, place: latent_rows, from: prompt.latent.work}
+      - {action: retire, materialization: prompt.latent.work}
+
+  - id: store_prompt_rope
+    label: Append four rotated kR rows
+    operation: build_prompt_cache
+    kind: transfer
+    link: projection_cache
+    flow: prompt_rope_fill
+    reads: [prompt.rope.work]
+    after: [compress_prompt_kv]
+    step: 2
+    claims: [{resource: cache_write, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: prompt.rope.cache, entity: prompt_rope_key, place: rope_rows, from: prompt.rope.work}
+      - {action: retire, materialization: prompt.rope.work}
+
+  - id: absorb_prompt_query
+    label: Transform qC with the key up-projection weights
+    operation: score_prompt
+    kind: compute
+    at: score_path
+    reads: [prompt.q.nope]
+    after: [project_prompt_query]
+    step: 2
+    claims: [{resource: score_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: prompt.q.absorbed, entity: prompt_absorbed_query, place: score_path}
+      - {action: retire, materialization: prompt.q.nope}
+
+  - id: score_prompt_content
+    label: Score absorbed queries against cached cKV
+    operation: score_prompt
+    kind: compute
+    at: score_path
+    reads: [prompt.q.absorbed, prompt.latent.cache]
+    after: [absorb_prompt_query, store_prompt_latent]
+    step: 3
+    claims: [{resource: score_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: prompt.score.content, entity: prompt_content_scores, place: score_path}
+      - {action: retire, materialization: prompt.q.absorbed}
+
+  - id: score_prompt_position
+    label: Score RoPE queries against cached kR
+    operation: score_prompt
+    kind: compute
+    at: score_path
+    reads: [prompt.q.rope, prompt.rope.cache]
+    after: [project_prompt_query, store_prompt_rope]
+    step: 3
+    claims: [{resource: score_compute, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: prompt.score.position, entity: prompt_position_scores, place: score_path}
+      - {action: retire, materialization: prompt.q.rope}
+
+  - id: softmax_prompt_scores
+    label: Add score parts, apply causal mask, and softmax
+    operation: normalize_prompt
+    kind: compute
+    at: score_path
+    reads: [prompt.score.content, prompt.score.position]
+    after: [score_prompt_content, score_prompt_position]
+    step: 4
+    claims: [{resource: softmax_pipe, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: prompt.weights, entity: prompt_attention_weights, place: score_path}
+      - {action: retire, materialization: prompt.score.content}
+      - {action: retire, materialization: prompt.score.position}
+
+  - id: reduce_prompt_latents
+    label: Form each token context directly from cached cKV
+    operation: reduce_prompt
+    kind: compute
+    at: value_path
+    reads: [prompt.weights, prompt.latent.cache]
+    after: [softmax_prompt_scores]
+    step: 5
+    claims: [{resource: latent_reduce, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: prompt.context.latent, entity: prompt_latent_context, place: value_path}
+      - {action: retire, materialization: prompt.weights}
+
+  - id: project_prompt_output
+    label: Apply value up-projection and output projection
+    operation: emit_prompt
+    kind: compute
+    at: value_path
+    reads: [prompt.context.latent]
+    after: [reduce_prompt_latents]
+    step: 6
+    claims: [{resource: output_projection, amount: {slots: 1}}]
+    effects:
+      - {action: create, materialization: prompt.output, entity: prompt_output, place: value_path}
+      - {action: retire, materialization: prompt.context.latent}
+      - {action: retire, materialization: prompt.input}
+
+checkpoints:
+  - id: initial
+    label: Four prompt tokens enter one MLA layer
+    step: 0
+    detail: The cache is empty; the four-token hidden-state batch is the only materialization.
+    focus: [prompt.input, input]
+  - id: project
+    label: Project Q and compressed KV in parallel
+    step: 1
+    detail: One path creates per-head query content and RoPE parts while the other jointly compresses K/V content and produces the shared positional key.
+    focus: [project_prompt_query, compress_prompt_kv, projection_compute]
+  - id: cache_and_absorb
+    label: Fill the compact cache while absorbing the query
+    step: 2
+    detail: Four cKV rows and four kR rows are copied into separate cache regions while qC is transformed for direct latent-cache scoring.
+    focus: [store_prompt_latent, store_prompt_rope, absorb_prompt_query, projection_cache]
+  - id: score
+    label: Build content and position scores
+    step: 3
+    detail: Absorbed qC reads cKV while qR reads kR; full per-head K and V tensors are never materialized.
+    focus: [score_prompt_content, score_prompt_position, prompt.latent.cache, prompt.rope.cache]
+  - id: softmax
+    label: Combine, causally mask, and normalize
+    step: 4
+    detail: The two score contributions are added, future prompt positions are masked, and ten causal token pairs become attention weights.
+    focus: [softmax_prompt_scores, softmax_pipe]
+  - id: latent_context
+    label: Reduce values in latent space
+    step: 5
+    detail: Attention weights reduce the cached cKV rows before any value up-projection, producing one latent context per prompt token.
+    focus: [reduce_prompt_latents, prompt.latent.cache]
+  - id: project_output
+    label: Up-project the four outputs
+    step: 6
+    detail: The latent contexts pass through the value and output projections; the compact prompt cache remains resident for decode.
+    focus: [project_prompt_output, output_projection]
+  - id: ready_for_decode
+    label: Prefill is complete
+    step: 7
+    detail: Four outputs and 4,608 cache bytes remain—4,096 bytes of cKV plus 512 bytes of positional keys in this BF16 illustration.
+    focus: [prompt.output, prompt.latent.cache, prompt.rope.cache, cache_bytes]
+
+view:
+  system_roots: [input, projection, cache, attention]
+  draggable: [input, projection, cache, attention]
+  timeline_resources: [projection_compute, cache_write, score_compute, softmax_pipe, latent_reduce, output_projection]
+  importance: [prompt_hidden, prompt_latent, prompt_rope_key, prompt_output]
+  show_source: true
+  show_compiled: true

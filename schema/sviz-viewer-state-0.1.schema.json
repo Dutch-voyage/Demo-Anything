@@ -1,0 +1,221 @@
+{
+  "$defs": {
+    "SavedViewerView": {
+      "additionalProperties": false,
+      "properties": {
+        "projection": {
+          "default": "system",
+          "enum": [
+            "ir",
+            "compiled",
+            "system",
+            "timeline"
+          ],
+          "title": "Projection",
+          "type": "string"
+        },
+        "checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint"
+        }
+      },
+      "title": "SavedViewerView",
+      "type": "object"
+    },
+    "ViewerAnnotation": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "anchor": {
+          "title": "Anchor",
+          "type": "string"
+        },
+        "checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint"
+        },
+        "status": {
+          "default": "unresolved",
+          "enum": [
+            "unresolved",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "origin": {
+          "default": "user",
+          "enum": [
+            "authored",
+            "user",
+            "agent"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "author_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Author Id"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "body",
+        "anchor"
+      ],
+      "title": "ViewerAnnotation",
+      "type": "object"
+    },
+    "ViewerLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "shape_scale": {
+          "default": 1,
+          "maximum": 1.4,
+          "minimum": 0.7,
+          "title": "Shape Scale",
+          "type": "number"
+        },
+        "place_offsets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ViewerPoint"
+          },
+          "title": "Place Offsets",
+          "type": "object"
+        },
+        "place_scales": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Place Scales",
+          "type": "object"
+        },
+        "edge_offsets": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ViewerPoint"
+          },
+          "title": "Edge Offsets",
+          "type": "object"
+        },
+        "collapsed_places": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Collapsed Places",
+          "type": "array"
+        }
+      },
+      "title": "ViewerLayout",
+      "type": "object"
+    },
+    "ViewerPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "default": 0,
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "default": 0,
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "title": "ViewerPoint",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Version",
+      "type": "string"
+    },
+    "visualization_id": {
+      "title": "Visualization Id",
+      "type": "string"
+    },
+    "base_revision": {
+      "title": "Base Revision",
+      "type": "string"
+    },
+    "revision": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Revision",
+      "type": "integer"
+    },
+    "narrative_overrides": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Narrative Overrides",
+      "type": "object"
+    },
+    "annotations": {
+      "items": {
+        "$ref": "#/$defs/ViewerAnnotation"
+      },
+      "title": "Annotations",
+      "type": "array"
+    },
+    "deleted_annotation_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Deleted Annotation Ids",
+      "type": "array"
+    },
+    "layout": {
+      "$ref": "#/$defs/ViewerLayout"
+    },
+    "saved_view": {
+      "$ref": "#/$defs/SavedViewerView"
+    }
+  },
+  "required": [
+    "visualization_id",
+    "base_revision"
+  ],
+  "title": "ViewerState",
+  "type": "object"
+}

@@ -1,0 +1,1177 @@
+{
+  "$defs": {
+    "DraftAnnotation": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "anchor": {
+          "title": "Anchor",
+          "type": "string"
+        },
+        "checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint"
+        },
+        "body": {
+          "minLength": 1,
+          "title": "Body",
+          "type": "string"
+        },
+        "status": {
+          "default": "unresolved",
+          "enum": [
+            "unresolved",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "anchor",
+        "body"
+      ],
+      "title": "DraftAnnotation",
+      "type": "object"
+    },
+    "DraftCheckpoint": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "at": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At"
+        },
+        "step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Step"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detail"
+        },
+        "narrative": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Narrative"
+        },
+        "focus": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Focus",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "DraftCheckpoint",
+      "type": "object"
+    },
+    "DraftClaim": {
+      "additionalProperties": false,
+      "properties": {
+        "resource": {
+          "title": "Resource",
+          "type": "string"
+        },
+        "amount": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Amount",
+          "type": "object"
+        }
+      },
+      "required": [
+        "resource",
+        "amount"
+      ],
+      "title": "DraftClaim",
+      "type": "object"
+    },
+    "DraftEffect": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "create",
+            "place",
+            "unplace",
+            "retire",
+            "update",
+            "relate"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "materialization": {
+          "title": "Materialization",
+          "type": "string"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entity"
+        },
+        "place": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Place"
+        },
+        "from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "From"
+        },
+        "to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "To"
+        },
+        "relation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Relation"
+        },
+        "write": {
+          "anyOf": [
+            {
+              "enum": [
+                "replace",
+                "accumulate",
+                "assemble",
+                "select"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Write"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        }
+      },
+      "required": [
+        "action",
+        "materialization"
+      ],
+      "title": "DraftEffect",
+      "type": "object"
+    },
+    "DraftEntity": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        },
+        "quantity": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Quantity",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "title": "DraftEntity",
+      "type": "object"
+    },
+    "DraftFlow": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "entity": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entity"
+        },
+        "stages": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Stages",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "stages"
+      ],
+      "title": "DraftFlow",
+      "type": "object"
+    },
+    "DraftLink": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "from": {
+          "title": "From",
+          "type": "string"
+        },
+        "to": {
+          "title": "To",
+          "type": "string"
+        },
+        "directed": {
+          "default": false,
+          "title": "Directed",
+          "type": "boolean"
+        },
+        "resource": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource"
+        }
+      },
+      "required": [
+        "id",
+        "from",
+        "to"
+      ],
+      "title": "DraftLink",
+      "type": "object"
+    },
+    "DraftMaterialization": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "entity": {
+          "title": "Entity",
+          "type": "string"
+        },
+        "place": {
+          "title": "Place",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "entity",
+        "place"
+      ],
+      "title": "DraftMaterialization",
+      "type": "object"
+    },
+    "DraftOperation": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "title": "DraftOperation",
+      "type": "object"
+    },
+    "DraftPlace": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent"
+        },
+        "role": {
+          "default": "group",
+          "enum": [
+            "group",
+            "storage",
+            "buffer",
+            "executor",
+            "register",
+            "queue"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "layout": {
+          "default": "hierarchy",
+          "enum": [
+            "hierarchy",
+            "memory",
+            "grid",
+            "queue",
+            "network"
+          ],
+          "title": "Layout",
+          "type": "string"
+        },
+        "capacity": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Capacity",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "DraftPlace",
+      "type": "object"
+    },
+    "DraftResource": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "owner": {
+          "title": "Owner",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "storage",
+            "bandwidth",
+            "execution",
+            "coordination"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "capacity": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Capacity",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "owner",
+        "kind",
+        "capacity"
+      ],
+      "title": "DraftResource",
+      "type": "object"
+    },
+    "DraftStage": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "operation": {
+          "title": "Operation",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "compute",
+            "transfer",
+            "control",
+            "wait",
+            "sync",
+            "state-change"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "At"
+        },
+        "link": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Link"
+        },
+        "flow": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Flow"
+        },
+        "reads": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reads",
+          "type": "array"
+        },
+        "effects": {
+          "items": {
+            "$ref": "#/$defs/DraftEffect"
+          },
+          "title": "Effects",
+          "type": "array"
+        },
+        "claims": {
+          "items": {
+            "$ref": "#/$defs/DraftClaim"
+          },
+          "title": "Claims",
+          "type": "array"
+        },
+        "after": {
+          "items": {
+            "type": "string"
+          },
+          "title": "After",
+          "type": "array"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start"
+        },
+        "duration": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration"
+        },
+        "step": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Step"
+        }
+      },
+      "required": [
+        "id",
+        "operation",
+        "kind"
+      ],
+      "title": "DraftStage",
+      "type": "object"
+    },
+    "DraftTime": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "timeline",
+            "steps"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "enum": [
+                "ns",
+                "us",
+                "ms",
+                "s"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "title": "DraftTime",
+      "type": "object"
+    },
+    "DraftViewRecipe": {
+      "additionalProperties": false,
+      "properties": {
+        "system_roots": {
+          "items": {
+            "type": "string"
+          },
+          "title": "System Roots",
+          "type": "array"
+        },
+        "draggable": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Draggable",
+          "type": "array"
+        },
+        "timeline_resources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Timeline Resources",
+          "type": "array"
+        },
+        "importance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Importance",
+          "type": "array"
+        },
+        "show_source": {
+          "default": true,
+          "title": "Show Source",
+          "type": "boolean"
+        },
+        "show_compiled": {
+          "default": true,
+          "title": "Show Compiled",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "system_roots",
+        "timeline_resources"
+      ],
+      "title": "DraftViewRecipe",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "0.2-draft",
+      "title": "Version",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "time": {
+      "$ref": "#/$defs/DraftTime"
+    },
+    "places": {
+      "items": {
+        "$ref": "#/$defs/DraftPlace"
+      },
+      "title": "Places",
+      "type": "array"
+    },
+    "resources": {
+      "items": {
+        "$ref": "#/$defs/DraftResource"
+      },
+      "title": "Resources",
+      "type": "array"
+    },
+    "links": {
+      "items": {
+        "$ref": "#/$defs/DraftLink"
+      },
+      "title": "Links",
+      "type": "array"
+    },
+    "entities": {
+      "items": {
+        "$ref": "#/$defs/DraftEntity"
+      },
+      "title": "Entities",
+      "type": "array"
+    },
+    "initial_materializations": {
+      "items": {
+        "$ref": "#/$defs/DraftMaterialization"
+      },
+      "title": "Initial Materializations",
+      "type": "array"
+    },
+    "operations": {
+      "items": {
+        "$ref": "#/$defs/DraftOperation"
+      },
+      "title": "Operations",
+      "type": "array"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/DraftStage"
+      },
+      "title": "Stages",
+      "type": "array"
+    },
+    "flows": {
+      "items": {
+        "$ref": "#/$defs/DraftFlow"
+      },
+      "title": "Flows",
+      "type": "array"
+    },
+    "annotations": {
+      "items": {
+        "$ref": "#/$defs/DraftAnnotation"
+      },
+      "title": "Annotations",
+      "type": "array"
+    },
+    "checkpoints": {
+      "items": {
+        "$ref": "#/$defs/DraftCheckpoint"
+      },
+      "title": "Checkpoints",
+      "type": "array"
+    },
+    "view": {
+      "$ref": "#/$defs/DraftViewRecipe"
+    }
+  },
+  "required": [
+    "version",
+    "id",
+    "title",
+    "time",
+    "places",
+    "resources",
+    "entities",
+    "operations",
+    "stages",
+    "checkpoints",
+    "view"
+  ],
+  "title": "TraceDocument",
+  "type": "object"
+}
