@@ -170,6 +170,12 @@ def test_server_uses_portable_component() -> None:
     assert "saveViewerState()" in component.text
     assert "state-src" in component.text
     assert "viewer-state-conflict" in component.text
+    assert "auditCurrentLayout()" in component.text
+    assert "checkDefaultLayout(options = {})" in component.text
+    assert 'new CustomEvent("layout-check"' in component.text
+    assert "data-layout-item" in component.text
+    assert "data-layout-label" in component.text
+    assert "data-check-layout" in component.text
     assert "this.visibleAnnotations().findIndex" in component.text
     assert component.headers["cache-control"] == "no-store"
 

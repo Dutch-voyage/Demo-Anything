@@ -474,6 +474,11 @@ narrow, and wide containers. Exercise selection, keyboard navigation, place
 dragging, place resizing, shape rescaling, edge adjustment, Markdown editing,
 pin creation, annotation status switching, and layout reset.
 
+Run **Check layout** at each supported host width. It audits every checkpoint
+in System and Timeline at the unmodified 100% layout. Record the returned
+report, including shortened-label warnings, in the visual QA artifact. See
+[`layout-checking.md`](layout-checking.md) for the browser and CI APIs.
+
 Fix problems at the correct layer:
 
 - incorrect meaning or state → trace;
@@ -493,6 +498,7 @@ checkpoints and sizes.
 - [ ] All goal-critical elements are visible at the default layout.
 - [ ] No important edge, arrowhead, object, or label is unintentionally hidden.
 - [ ] Short Timeline marks do not leak text into neighboring events.
+- [ ] The default-layout checker reports no overlap errors at each supported width.
 - [ ] Selection is consistent across System and Timeline views.
 - [ ] Transfers connect the correct semantic endpoints.
 - [ ] Parallel transfers remain distinguishable or clearly aggregated.

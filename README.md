@@ -27,7 +27,10 @@ resized, object shapes can be rescaled, and edge routes can be adjusted when a
 compiled default needs help. Each checkpoint also has an editable Markdown
 narrative. Readers can attach pinned annotations to selected visual elements
 and switch each pin between unresolved and resolved without hiding it. Opening
-an annotation also exposes its title, body, and delete action.
+an annotation also exposes its title, body, and delete action. **Check layout**
+audits every System and Timeline checkpoint at the default scale using the
+browser's rendered bounds; see the
+[`layout-checking guide`](docs/layout-checking.md).
 
 ## Examples
 

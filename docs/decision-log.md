@@ -1,5 +1,29 @@
 # Design decision log
 
+## 2026-08-25 — Audit default layouts using rendered browser geometry
+
+**Status:** Implemented
+
+### Decision
+
+Expose **Check layout** and the `checkDefaultLayout()` Web Component API. The
+audit temporarily renders every System and Timeline checkpoint at 100% scale
+with no manual offsets, measures actual SVG and text bounds, reports overlap
+errors and label-fitting warnings, then restores reader state without saving or
+marking it dirty.
+
+Keep collision policy generic and semantic: nested place containment is
+allowed, while sibling places, peer objects, same-track Timeline marks, text,
+shape ownership, and edge-label collisions are checked. Use rendered browser
+geometry rather than character estimates as the acceptance signal. A resize
+invalidates the result because font and SVG bounds depend on host width.
+
+Make default rendering cooperate with the checker by fitting place and active
+stage labels, allocating denser materialization grids when active-stage or
+meter space must be reserved, stacking concurrent active stages, and placing
+narrow external edge labels outside their routing lane. Do not introduce
+workload-name or domain-tag branches.
+
 ## 2026-08-24 — Enable persistence in the local viewer by default
 
 **Status:** Implemented

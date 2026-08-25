@@ -76,6 +76,10 @@ const NEXT_STYLES = String.raw`
   .title { margin: 0 0 2px; font-size: 16px; line-height: 1.25; font-weight: 650; letter-spacing: -.01em; }
   .subtitle { color: var(--sv-muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .head-actions { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+  .layout-check-controls { display: flex; align-items: center; gap: 6px; }
+  .layout-check-status { max-width: 112px; overflow: hidden; color: var(--sv-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+  .layout-check-status[data-state="fail"] { color: var(--sv-danger); }
+  .layout-check-status[data-state="pass"] { color: var(--sv-compute); }
   .persistence-controls { display: flex; align-items: center; gap: 6px; }
   .persistence-status { max-width: 104px; overflow: hidden; color: var(--sv-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
   .persistence-status[data-state="conflict"], .persistence-status[data-state="error"] { color: var(--sv-danger); }
@@ -401,6 +405,34 @@ function fitTimelineLabel(value, availableWidth, fontSize) {
   return { text: `${characters.slice(0, Math.max(3, maxCharacters - 1)).join("")}…`, fit: "truncated" };
 }
 
+function visibleRectangle(element) {
+  if (!element || element.getClientRects().length === 0) return null;
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= .5 || rect.height <= .5) return null;
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function rectangleIntersection(first, second, tolerance = 1) {
+  const width = Math.min(first.right, second.right) - Math.max(first.left, second.left);
+  const height = Math.min(first.bottom, second.bottom) - Math.max(first.top, second.top);
+  if (width <= tolerance || height <= tolerance) return null;
+  return { width, height, area: width * height };
+}
+
+function rectangleContains(container, content, tolerance = 1) {
+  return content.left >= container.left - tolerance
+    && content.top >= container.top - tolerance
+    && content.right <= container.right + tolerance
+    && content.bottom <= container.bottom + tolerance;
+}
+
 function routeConnection(fromBox, toBox, obstacles, canvas, routeIndex, profileName, label, adjustment = { x: 0, y: 0 }) {
   const gap = 7;
   const offsetX = Number(adjustment.x || 0) * canvas.width;
@@ -494,13 +526,13 @@ function routeConnection(fromBox, toBox, obstacles, canvas, routeIndex, profileN
   const automaticX = right
     ? Math.max(fromBox.x + fromBox.w, toBox.x + toBox.w, ...obstacles.map(box => box.x + box.w)) + 14 + lane * 18
     : Math.min(fromBox.x, toBox.x, ...obstacles.map(box => box.x)) - 14 - lane * 18;
-  const edgeX = clampValue(automaticX + offsetX, 12, canvas.width - 12);
+  const edgeX = clampValue(automaticX + offsetX, 24, canvas.width - 24);
   start = { x: right ? fromBox.x + fromBox.w + gap : fromBox.x - gap, y: from.y };
   end = { x: right ? toBox.x + toBox.w + gap : toBox.x - gap, y: to.y };
   const labelY = clampValue((start.y + end.y) / 2 + offsetY, 18, canvas.height - 18);
   return {
     path: `M ${start.x} ${start.y} L ${edgeX} ${start.y} L ${edgeX} ${end.y} L ${end.x} ${end.y}`,
-    label: { x: edgeX + (right ? -10 : 10), y: labelY },
+    label: { x: edgeX + (right ? 10 : -10), y: labelY },
     handle: { x: edgeX, y: labelY },
     external: true,
     verticalLabel: true,
@@ -537,8 +569,19 @@ class SystemsVizNext extends HTMLElement {
     this.stateDirty = false;
     this.stateStatus = "unconfigured";
     this.stateBaseMismatch = false;
+    this.layoutCheckState = "idle";
+    this.layoutCheckReport = null;
+    this.layoutCheckPromise = null;
     this.pinFrame = null;
-    this.resizeObserver = new ResizeObserver(() => this.renderActivePanel());
+    this.resizeObserver = new ResizeObserver(() => {
+      this.renderActivePanel();
+      const width = Math.round(this.getBoundingClientRect().width);
+      if (this.layoutCheckReport && this.layoutCheckReport.width !== width) {
+        this.layoutCheckState = "idle";
+        this.layoutCheckReport = null;
+        this.updateLayoutCheckControls();
+      }
+    });
   }
 
   connectedCallback() {
@@ -602,6 +645,9 @@ class SystemsVizNext extends HTMLElement {
       this.stateDirty = false;
       this.stateStatus = this.getAttribute("state-src") ? "loading" : "unconfigured";
       this.stateBaseMismatch = false;
+      this.layoutCheckState = "idle";
+      this.layoutCheckReport = null;
+      this.layoutCheckPromise = null;
       for (const id of this.data.display.system.draggable || []) {
         this.placeOffsets[id] = { x: 0, y: 0 };
         this.placeScales[id] = 1;
@@ -643,6 +689,32 @@ class SystemsVizNext extends HTMLElement {
     }
     if (save) save.disabled = !this.stateDirty || ["loading", "saving", "conflict"].includes(this.stateStatus);
     if (reload) reload.hidden = !["conflict", "error"].includes(this.stateStatus);
+  }
+
+  layoutCheckStatusLabel() {
+    if (this.layoutCheckState === "checking") return "Checking…";
+    if (!this.layoutCheckReport) return "";
+    const { errors } = this.layoutCheckReport.summary;
+    if (errors) return `${errors} overlap${errors === 1 ? "" : "s"}`;
+    return "Layout clean";
+  }
+
+  updateLayoutCheckControls() {
+    const button = this.shadowRoot.querySelector("[data-check-layout]");
+    const status = this.shadowRoot.querySelector("[data-layout-check-status]");
+    if (button) button.disabled = this.layoutCheckState === "checking";
+    if (status) {
+      status.dataset.state = this.layoutCheckState;
+      status.textContent = this.layoutCheckStatusLabel();
+      const failures = this.layoutCheckReport?.issues.filter(issue => issue.severity === "error") || [];
+      const details = failures.slice(0, 12).map(issue => {
+        const format = item => `${item?.kind || "element"}:${item?.id || "unknown"} ${item?.label || ""}`.trim();
+        const pair = issue.second ? ` ↔ ${format(issue.second)}` : "";
+        return `${issue.projection}/${issue.checkpoint}: ${format(issue.first)}${pair}`;
+      });
+      status.title = details.join("\n");
+      status.setAttribute("aria-label", details.length ? `${this.layoutCheckStatusLabel()}. ${details.join("; ")}` : this.layoutCheckStatusLabel());
+    }
   }
 
   markStateDirty() {
@@ -874,6 +946,10 @@ class SystemsVizNext extends HTMLElement {
             <div class="subtitle">${escapeText(this.data.description || "")}</div>
           </div>
           <div class="head-actions">
+            <div class="layout-check-controls">
+              <output class="layout-check-status" data-layout-check-status data-state="${escapeText(this.layoutCheckState)}" aria-live="polite">${escapeText(this.layoutCheckStatusLabel())}</output>
+              <button type="button" class="content-action" data-check-layout>Check layout</button>
+            </div>
             ${this.getAttribute("state-src") ? `<div class="persistence-controls">
               <span class="persistence-status" data-persistence-status data-state="${escapeText(this.stateStatus)}">${this.persistenceStatusLabel()}</span>
               <button type="button" class="content-action" data-save-state ${this.stateDirty ? "" : "disabled"}>Save changes</button>
@@ -907,6 +983,7 @@ class SystemsVizNext extends HTMLElement {
     this.shadowRoot.querySelectorAll("[data-view]").forEach(button => button.addEventListener("click", () => this.setView(button.dataset.view)));
     this.shadowRoot.querySelector("[data-previous]").addEventListener("click", () => this.setCursor(this.cursorIndex - 1));
     this.shadowRoot.querySelector("[data-next]").addEventListener("click", () => this.setCursor(this.cursorIndex + 1));
+    this.shadowRoot.querySelector("[data-check-layout]").addEventListener("click", () => this.checkDefaultLayout());
     this.shadowRoot.querySelector("[data-save-state]")?.addEventListener("click", () => this.saveViewerState());
     this.shadowRoot.querySelector("[data-reload-state]")?.addEventListener("click", () => this.loadViewerState());
     this.shadowRoot.addEventListener("keydown", event => this.handleKeydown(event));
@@ -1366,6 +1443,232 @@ class SystemsVizNext extends HTMLElement {
     this.markStateDirty();
   }
 
+  auditCurrentLayout() {
+    if (!this.data || !["system", "timeline"].includes(this.view)) {
+      throw new Error("Layout audits require the System or Timeline projection");
+    }
+    const panel = this.shadowRoot.querySelector(`[data-panel="${this.view}"]`);
+    const svg = panel?.querySelector("svg");
+    if (!svg) throw new Error(`The ${this.view} projection is not rendered`);
+
+    const issues = [];
+    const describe = element => ({
+      kind: element.dataset.layoutLabel || element.dataset.layoutItem || "element",
+      id: element.dataset.layoutOwner || element.dataset.layoutId || element.dataset.select || "unknown",
+      label: element.textContent?.trim() || element.getAttribute("aria-label") || "",
+    });
+    const addIssue = (code, severity, message, first, second = null) => {
+      issues.push({
+        code,
+        severity,
+        projection: this.view,
+        checkpoint: this.checkpoint.id,
+        message,
+        first: describe(first),
+        ...(second ? { second: describe(second) } : {}),
+      });
+    };
+
+    const labels = [...svg.querySelectorAll("[data-layout-label]")]
+      .map(element => ({ element, rect: visibleRectangle(element) }))
+      .filter(item => item.rect);
+    for (let firstIndex = 0; firstIndex < labels.length; firstIndex += 1) {
+      for (let secondIndex = firstIndex + 1; secondIndex < labels.length; secondIndex += 1) {
+        const first = labels[firstIndex];
+        const second = labels[secondIndex];
+        if (first.element.dataset.layoutOwner === second.element.dataset.layoutOwner) continue;
+        const intersection = rectangleIntersection(first.rect, second.rect);
+        if (intersection) {
+          addIssue(
+            "text-overlap",
+            "error",
+            `Text overlaps by ${intersection.width.toFixed(1)} × ${intersection.height.toFixed(1)} px`,
+            first.element,
+            second.element,
+          );
+        }
+      }
+    }
+
+    const items = [...svg.querySelectorAll("[data-layout-item]")].map(element => ({
+      element,
+      box: element.querySelector(":scope > [data-layout-box]"),
+    })).map(item => ({ ...item, rect: visibleRectangle(item.box) })).filter(item => item.rect);
+    const parentByPlace = Object.fromEntries(this.data.semantic.places.map(place => [place.id, place.parent || null]));
+    const isPlaceAncestor = (ancestor, descendant) => {
+      let parent = parentByPlace[descendant];
+      while (parent) {
+        if (parent === ancestor) return true;
+        parent = parentByPlace[parent];
+      }
+      return false;
+    };
+    const shouldCompareItems = (first, second) => {
+      const firstKind = first.element.dataset.layoutItem;
+      const secondKind = second.element.dataset.layoutItem;
+      const firstId = first.element.dataset.layoutId;
+      const secondId = second.element.dataset.layoutId;
+      if (firstKind === "place" && secondKind === "place") {
+        return !isPlaceAncestor(firstId, secondId) && !isPlaceAncestor(secondId, firstId);
+      }
+      if (firstKind === "timeline-mark" && secondKind === "timeline-mark") {
+        return first.element.dataset.layoutLane === second.element.dataset.layoutLane
+          && first.element.dataset.layoutTrack === second.element.dataset.layoutTrack;
+      }
+      if (firstKind === "place" || secondKind === "place") return false;
+      return first.element.dataset.layoutParent
+        && first.element.dataset.layoutParent === second.element.dataset.layoutParent;
+    };
+    for (let firstIndex = 0; firstIndex < items.length; firstIndex += 1) {
+      for (let secondIndex = firstIndex + 1; secondIndex < items.length; secondIndex += 1) {
+        const first = items[firstIndex];
+        const second = items[secondIndex];
+        if (!shouldCompareItems(first, second)) continue;
+        const intersection = rectangleIntersection(first.rect, second.rect);
+        if (intersection) {
+          addIssue(
+            "element-overlap",
+            "error",
+            `Elements overlap by ${intersection.width.toFixed(1)} × ${intersection.height.toFixed(1)} px`,
+            first.element,
+            second.element,
+          );
+        }
+      }
+    }
+
+    for (const { element, rect } of labels) {
+      const owner = element.dataset.layoutOwner;
+      if (!owner) continue;
+      const ownerItem = items.find(item => item.element.dataset.layoutId === owner);
+      if (ownerItem && !rectangleContains(ownerItem.rect, rect, 1.5)) {
+        addIssue("label-overflow", "error", "Text extends outside its owning shape", element, ownerItem.element);
+      }
+    }
+
+    const edgeLabels = labels.filter(item => item.element.dataset.layoutLabel === "edge");
+    for (const edgeLabel of edgeLabels) {
+      for (const item of items) {
+        if (rectangleIntersection(edgeLabel.rect, item.rect)) {
+          addIssue("edge-label-overlap", "error", "Edge text overlaps a visual element", edgeLabel.element, item.element);
+        }
+      }
+    }
+
+    for (const group of svg.querySelectorAll('[data-label-fit="truncated"], [data-label-fit="hidden"]')) {
+      const fit = group.dataset.labelFit;
+      addIssue(
+        fit === "hidden" ? "label-hidden" : "label-truncated",
+        "warning",
+        fit === "hidden" ? "A label is hidden at this width" : "A label is shortened at this width",
+        group,
+      );
+    }
+
+    const errors = issues.filter(issue => issue.severity === "error").length;
+    const warnings = issues.length - errors;
+    return {
+      version: "0.1",
+      visualization_id: this.visualizationId,
+      projection: this.view,
+      checkpoint: this.checkpoint.id,
+      width: Math.round(this.getBoundingClientRect().width),
+      shape_scale: this.shapeScale,
+      status: errors ? "fail" : "pass",
+      summary: { errors, warnings },
+      issues,
+    };
+  }
+
+  async checkDefaultLayout(options = {}) {
+    if (this.layoutCheckPromise) return this.layoutCheckPromise;
+    this.layoutCheckPromise = (async () => {
+      const saved = {
+        view: this.view,
+        cursorIndex: this.cursorIndex,
+        shapeScale: this.shapeScale,
+        placeOffsets: structuredClone(this.placeOffsets),
+        placeScales: structuredClone(this.placeScales),
+        edgeOffsets: structuredClone(this.edgeOffsets),
+        edgeEditMode: this.edgeEditMode,
+      };
+      const projections = (options.projections || ["system", "timeline"])
+        .filter(projection => ["system", "timeline"].includes(projection));
+      const checkpointIndexes = options.checkpoints === "current"
+        ? [this.cursorIndex]
+        : this.checkpoints.map((_, index) => index);
+      const reports = [];
+      this.layoutCheckState = "checking";
+      this.updateLayoutCheckControls();
+      try {
+        this.shapeScale = 1;
+        this.placeOffsets = Object.fromEntries(Object.keys(this.placeOffsets).map(id => [id, { x: 0, y: 0 }]));
+        this.placeScales = Object.fromEntries(Object.keys(this.placeScales).map(id => [id, 1]));
+        this.edgeOffsets = Object.fromEntries(Object.keys(this.edgeOffsets).map(id => [id, { x: 0, y: 0 }]));
+        this.edgeEditMode = false;
+        for (const projection of projections) {
+          this.view = projection;
+          for (const index of checkpointIndexes) {
+            this.cursorIndex = index;
+            this.renderActivePanel();
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            reports.push(this.auditCurrentLayout());
+          }
+        }
+      } finally {
+        Object.assign(this, saved);
+        this.render();
+      }
+      const allIssues = reports.flatMap(report => report.issues);
+      const issueKey = issue => [
+        issue.projection,
+        issue.severity === "warning" ? issue.code : "overlap",
+        issue.first?.kind,
+        issue.first?.id,
+        issue.first?.label,
+        issue.second?.kind,
+        issue.second?.id,
+        issue.second?.label,
+      ].join("|");
+      const issues = [...new Map(allIssues.map(issue => [issueKey(issue), issue])).values()];
+      const errors = issues.filter(issue => issue.severity === "error").length;
+      const warnings = issues.length - errors;
+      this.layoutCheckReport = {
+        version: "0.1",
+        visualization_id: this.visualizationId,
+        width: Math.round(this.getBoundingClientRect().width),
+        shape_scale: 1,
+        status: errors ? "fail" : "pass",
+        summary: { errors, warnings, checks: reports.length },
+        issues,
+        checks: reports,
+      };
+      this.layoutCheckState = this.layoutCheckReport.status;
+      this.layoutCheckPromise = null;
+      this.updateLayoutCheckControls();
+      this.dispatchEvent(new CustomEvent("layout-check", {
+        bubbles: true,
+        composed: true,
+        detail: this.layoutCheckReport,
+      }));
+      return this.layoutCheckReport;
+    })().catch(error => {
+      this.layoutCheckPromise = null;
+      this.layoutCheckState = "fail";
+      this.layoutCheckReport = {
+        version: "0.1",
+        visualization_id: this.visualizationId,
+        status: "fail",
+        summary: { errors: 1, warnings: 0, checks: 0 },
+        issues: [{ code: "layout-check-error", severity: "error", message: error.message }],
+        checks: [],
+      };
+      this.updateLayoutCheckControls();
+      throw error;
+    });
+    return this.layoutCheckPromise;
+  }
+
   render() {
     if (!this.data || !this.checkpoint) return;
     this.renderActivePanel();
@@ -1543,7 +1846,7 @@ class SystemsVizNext extends HTMLElement {
         <path data-edge-halo data-select="${escapeText(route.id)}" d="${routed.path}" fill="none" stroke="var(--sv-panel)" stroke-width="${active ? 8 : 6}" stroke-linecap="round" stroke-linejoin="round"/>
         <path data-select="${escapeText(route.id)}" id="route-${escapeText(route.id)}" d="${routed.path}" fill="none" stroke="${color}" stroke-width="${isSelected ? 4 : active ? 3 : 1.75}" stroke-linecap="round" stroke-linejoin="round" ${route.directed ? `marker-end="url(#${isSelected ? "arrow-selected" : active ? "arrow-active" : "arrow"})"` : ""}/>
         <circle data-select="${escapeText(route.id)}" cx="${routed.label.x}" cy="${routed.label.y - 4}" r="14" fill="transparent" tabindex="0" role="button" aria-label="Select link ${escapeText(route.label)}"/>
-        <text class="edge-label" data-select="${escapeText(route.id)}" data-edge-label="${escapeText(route.id)}" x="${routed.label.x}" y="${routed.label.y}" text-anchor="middle" font-size="10" font-weight="${active ? 650 : 500}" fill="${color}"${transform}>${escapeText(label)}</text>
+        <text class="edge-label" data-select="${escapeText(route.id)}" data-edge-label="${escapeText(route.id)}" data-layout-label="edge" data-layout-owner="${escapeText(route.id)}" x="${routed.label.x}" y="${routed.label.y}" text-anchor="middle" font-size="10" font-weight="${active ? 650 : 500}" fill="${color}"${transform}>${escapeText(label)}</text>
       </g>`;
     }).join("");
 
@@ -1569,10 +1872,12 @@ class SystemsVizNext extends HTMLElement {
       const fill = active ? "color-mix(in srgb, var(--sv-compute) 10%, var(--sv-panel))" : isRoot ? "var(--sv-panel)" : "var(--sv-panel-soft)";
       const drag = isRoot && plan.draggable.includes(place.id);
       const fontSize = clampValue((isRoot ? 13 : 11) * this.shapeScale, 9, 17);
-      return `<g data-select="${escapeText(place.id)}" data-anchor-target="${escapeText(place.id)}" tabindex="0" role="button" aria-label="${drag ? `Select or move ${escapeText(place.label)}. Use arrow keys for precise movement.` : `Select ${escapeText(place.label)}.`}" ${drag ? `data-drag-place="${escapeText(place.id)}" data-dragging="${this.dragState?.id === place.id}"` : ""}>
-        <rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="${isRoot ? 9 : 6}" fill="${fill}" stroke="${stroke}" stroke-width="${rootSelected || active ? 2 : 1}"/>
+      const labelOffset = (isRoot ? 14 : 9) * this.shapeScale;
+      const fitted = fitTimelineLabel(place.label, box.w - labelOffset - 8, fontSize);
+      return `<g data-select="${escapeText(place.id)}" data-anchor-target="${escapeText(place.id)}" data-label-fit="${fitted.fit}" data-layout-item="place" data-layout-id="${escapeText(place.id)}" data-layout-parent="${escapeText(place.parent || "")}" tabindex="0" role="button" aria-label="${drag ? `Select or move ${escapeText(place.label)}. Use arrow keys for precise movement.` : `Select ${escapeText(place.label)}.`}" ${drag ? `data-drag-place="${escapeText(place.id)}" data-dragging="${this.dragState?.id === place.id}"` : ""}>
+        <rect data-layout-box x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="${isRoot ? 9 : 6}" fill="${fill}" stroke="${stroke}" stroke-width="${rootSelected || active ? 2 : 1}"/>
         ${isRoot ? `<rect x="${box.x}" y="${box.y}" width="4" height="${box.h}" rx="2" fill="${place.role === "storage" ? "var(--sv-primary)" : place.role === "buffer" ? "var(--sv-compute)" : "var(--sv-selection)"}"/>` : ""}
-        <text x="${box.x + (isRoot ? 14 : 9) * this.shapeScale}" y="${box.y + (isRoot ? 24 : 18) * this.shapeScale}" font-size="${fontSize}" font-weight="650">${escapeText(place.label)}</text>
+        ${fitted.text ? `<text data-layout-label="place" data-layout-owner="${escapeText(place.id)}" x="${box.x + labelOffset}" y="${box.y + (isRoot ? 24 : 18) * this.shapeScale}" font-size="${fontSize}" font-weight="650">${escapeText(fitted.text)}</text>` : ""}
       </g>`;
     }).join("");
 
@@ -1599,7 +1904,17 @@ class SystemsVizNext extends HTMLElement {
       const fontSize = clampValue(11 * scale, 9, 15);
       const startY = box.y + (plan.roots.includes(place.id) ? 39 : 25) * scale;
       const availableWidth = box.w - 18;
-      const columns = Math.max(1, Math.floor((availableWidth + gap) / (72 * scale + gap)));
+      const baseColumns = Math.max(1, Math.floor((availableWidth + gap) / (72 * scale + gap)));
+      const activeCount = activeStages.filter(stage => stage.at === place.id).length;
+      const hasStorageMeter = (ledgersByOwner[place.id] || []).some(ledger => ledger.kind === "storage");
+      const reservedBottom = activeCount
+        ? (hasStorageMeter ? 58 : 28) + Math.max(0, activeCount - 1) * 25 + 4
+        : hasStorageMeter ? 37 : 4;
+      const availableHeight = Math.max(chipHeight, box.y + box.h - reservedBottom - startY);
+      const availableRows = Math.max(1, Math.floor((availableHeight + gap) / (chipHeight + gap)));
+      const requiredColumns = Math.ceil(items.length / availableRows);
+      const maximumColumns = Math.max(1, Math.floor((availableWidth + gap) / (34 * scale + gap)));
+      const columns = Math.min(maximumColumns, Math.max(baseColumns, requiredColumns));
       const chipWidth = Math.min(76 * scale, (availableWidth - gap * (columns - 1)) / columns);
       return items.map((item, index) => {
         const x = box.x + 9 + (index % columns) * (chipWidth + gap);
@@ -1609,9 +1924,9 @@ class SystemsVizNext extends HTMLElement {
         const color = item.kind === "state" ? "var(--sv-compute)" : item.kind === "temporary-tile" ? "var(--sv-transfer)" : "var(--sv-primary)";
         const maxCharacters = Math.max(3, Math.floor((chipWidth - 12) / (fontSize * .58)));
         const label = item.label.length > maxCharacters ? `${item.label.slice(0, Math.max(2, maxCharacters - 1))}…` : item.label;
-        return `<g data-select="${escapeText(item.id)}" data-anchor-target="${escapeText(item.id)}" tabindex="0" role="button" aria-label="Select ${escapeText(item.label)} at ${escapeText(item.place)}">
-          <rect x="${x}" y="${y}" width="${chipWidth}" height="${chipHeight}" rx="${clampValue(5 * scale, 4, 8)}" fill="color-mix(in srgb, ${color} ${isSelected ? 24 : isFocused ? 18 : 10}%, var(--sv-panel))" stroke="${isSelected ? "var(--sv-selection)" : color}" stroke-width="${isSelected ? 2 : 1}"/>
-          <text x="${x + 7 * scale}" y="${y + chipHeight * .7}" font-size="${fontSize}" font-weight="${isFocused ? 650 : 500}">${escapeText(label)}</text>
+        return `<g data-select="${escapeText(item.id)}" data-anchor-target="${escapeText(item.id)}" data-layout-item="materialization" data-layout-id="${escapeText(item.id)}" data-layout-parent="${escapeText(item.place)}" tabindex="0" role="button" aria-label="Select ${escapeText(item.label)} at ${escapeText(item.place)}">
+          <rect data-layout-box x="${x}" y="${y}" width="${chipWidth}" height="${chipHeight}" rx="${clampValue(5 * scale, 4, 8)}" fill="color-mix(in srgb, ${color} ${isSelected ? 24 : isFocused ? 18 : 10}%, var(--sv-panel))" stroke="${isSelected ? "var(--sv-selection)" : color}" stroke-width="${isSelected ? 2 : 1}"/>
+          <text data-layout-label="materialization" data-layout-owner="${escapeText(item.id)}" x="${x + 7 * scale}" y="${y + chipHeight * .7}" font-size="${fontSize}" font-weight="${isFocused ? 650 : 500}">${escapeText(label)}</text>
         </g>`;
       }).join("");
     }).join("");
@@ -1628,22 +1943,27 @@ class SystemsVizNext extends HTMLElement {
         const formattedUsed = dimension === "bytes" ? compactBytes(used) : `${compactNumber(used)} ${dimension}`;
         const formattedCapacity = dimension === "bytes" ? compactBytes(capacity) : `${compactNumber(capacity)} ${dimension}`;
         const isSelected = selected === ledger.resource;
-        return `<g data-select="${escapeText(ledger.resource)}" data-anchor-target="${escapeText(ledger.resource)}" tabindex="0" role="button" aria-label="Select resource ${escapeText(ledger.label)}">
-          <rect x="${box.x + 7}" y="${y - 20}" width="${box.w - 14}" height="27" rx="4" fill="transparent"/>
-          <text x="${box.x + 10}" y="${y - 4}" font-size="10" font-weight="${isSelected ? 700 : 400}" fill="${isSelected ? "var(--sv-selection)" : "var(--sv-muted)"}">${formattedUsed} / ${formattedCapacity}</text>
+        return `<g data-select="${escapeText(ledger.resource)}" data-anchor-target="${escapeText(ledger.resource)}" data-layout-item="meter" data-layout-id="${escapeText(ledger.resource)}" data-layout-parent="${escapeText(owner)}" tabindex="0" role="button" aria-label="Select resource ${escapeText(ledger.label)}">
+          <rect data-layout-box x="${box.x + 7}" y="${y - 20}" width="${box.w - 14}" height="27" rx="4" fill="transparent"/>
+          <text data-layout-label="meter" data-layout-owner="${escapeText(ledger.resource)}" x="${box.x + 10}" y="${y - 4}" font-size="10" font-weight="${isSelected ? 700 : 400}" fill="${isSelected ? "var(--sv-selection)" : "var(--sv-muted)"}">${formattedUsed} / ${formattedCapacity}</text>
           <rect x="${box.x + 10}" y="${y}" width="${box.w - 20}" height="4" rx="2" fill="var(--sv-border)" stroke="${isSelected ? "var(--sv-selection)" : "none"}" stroke-width="${isSelected ? 2 : 0}"/>
           <rect x="${box.x + 10}" y="${y}" width="${(box.w - 20) * fraction}" height="4" rx="2" fill="var(--sv-compute)"/>
         </g>`;
       }).join("");
     }).join("");
 
+    const activeStageSlots = {};
     const activeMarkup = activeStages.filter(stage => stage.at && places[stage.at]).map(stage => {
       const box = places[stage.at];
-      const label = stage.label.length > 28 ? `${stage.label.slice(0, 27)}…` : stage.label;
+      const slot = activeStageSlots[stage.at] || 0;
+      activeStageSlots[stage.at] = slot + 1;
+      const hasStorageMeter = (ledgersByOwner[stage.at] || []).some(ledger => ledger.kind === "storage");
+      const y = box.y + box.h - (hasStorageMeter ? 58 : 28) - slot * 25;
+      const fitted = fitTimelineLabel(stage.label, box.w - 26, 10);
       const isSelected = selected === stage.id;
-      return `<g data-select="${escapeText(stage.id)}" data-anchor-target="${escapeText(stage.id)}" tabindex="0" role="button" aria-label="Select active stage ${escapeText(stage.label)}">
-        <rect x="${box.x + 7}" y="${box.y + box.h - 28}" width="${box.w - 14}" height="21" rx="5" fill="color-mix(in srgb, var(--sv-compute) 18%, var(--sv-panel))" stroke="${isSelected ? "var(--sv-selection)" : "var(--sv-compute)"}" stroke-width="${isSelected ? 2 : 1}"/>
-        <text x="${box.x + 13}" y="${box.y + box.h - 13}" font-size="10" font-weight="650">${escapeText(label)}</text>
+      return `<g data-select="${escapeText(stage.id)}" data-anchor-target="${escapeText(stage.id)}" data-label-fit="${fitted.fit}" data-layout-item="stage" data-layout-id="${escapeText(stage.id)}" data-layout-parent="${escapeText(stage.at)}" tabindex="0" role="button" aria-label="Select active stage ${escapeText(stage.label)}">
+        <rect data-layout-box x="${box.x + 7}" y="${y}" width="${box.w - 14}" height="21" rx="5" fill="color-mix(in srgb, var(--sv-compute) 18%, var(--sv-panel))" stroke="${isSelected ? "var(--sv-selection)" : "var(--sv-compute)"}" stroke-width="${isSelected ? 2 : 1}"/>
+        ${fitted.text ? `<text data-layout-label="stage" data-layout-owner="${escapeText(stage.id)}" x="${box.x + 13}" y="${y + 15}" font-size="10" font-weight="650">${escapeText(fitted.text)}</text>` : ""}
       </g>`;
     }).join("");
 
@@ -1712,14 +2032,14 @@ class SystemsVizNext extends HTMLElement {
       const { lane, index, y, laneHeight, fontSize, fitted } = layout;
       return `<g data-lane-label="${escapeText(lane.id)}" data-anchor-target="${escapeText(lane.id)}" data-label-fit="${fitted.fit}">
           <title>${escapeText(lane.label)}</title>
-          <text x="${left - 10}" y="${y + laneHeight / 2 + 4}" text-anchor="end" font-size="${fontSize}" fill="var(--sv-muted)" clip-path="url(#timeline-lane-label-${index})">${escapeText(fitted.text)}</text>
+          <text data-layout-label="timeline-lane" data-layout-owner="lane:${escapeText(lane.id)}" x="${left - 10}" y="${y + laneHeight / 2 + 4}" text-anchor="end" font-size="${fontSize}" fill="var(--sv-muted)" clip-path="url(#timeline-lane-label-${index})">${escapeText(fitted.text)}</text>
         </g>
         <line x1="${left}" y1="${y + laneHeight - 5}" x2="${width - right}" y2="${y + laneHeight - 5}" stroke="var(--sv-border)"/>`;
     }).join("");
     const tickCount = narrow ? 4 : 6;
     const ticks = Array.from({ length: tickCount + 1 }, (_, index) => plan.start + (plan.end - plan.start) * index / tickCount).map(value => `<g>
       <line x1="${x(value)}" y1="${top - 8}" x2="${x(value)}" y2="${timelineBottom - 5}" stroke="color-mix(in srgb, var(--sv-border) 65%, transparent)"/>
-      <text x="${x(value)}" y="${top - 16}" text-anchor="middle" font-size="10" fill="var(--sv-muted)">${value.toFixed(1)}</text>
+      <text data-layout-label="timeline-tick" data-layout-owner="tick:${value}" x="${x(value)}" y="${top - 16}" text-anchor="middle" font-size="10" fill="var(--sv-muted)">${value.toFixed(1)}</text>
     </g>`).join("");
     const markLayouts = plan.marks.map((mark, markIndex) => {
       const laneLayout = laneLayoutById[mark.lane];
@@ -1738,22 +2058,22 @@ class SystemsVizNext extends HTMLElement {
       const fontSize = markWidth >= 72 ? 10 : markWidth >= 42 ? 9 : 8;
       const padding = markWidth >= 42 ? 6 : 3;
       const fitted = fitTimelineLabel(mark.label, markWidth - padding * 2, fontSize);
-      return { mark, markIndex, y, markX, markWidth, isActive, isPast, isSelected, color, fontSize, padding, fitted };
+      return { mark, markIndex, track, y, markX, markWidth, isActive, isPast, isSelected, color, fontSize, padding, fitted };
     }).filter(Boolean);
     const clipDefinitions = markLayouts.map(layout => `<clipPath id="timeline-label-${layout.markIndex}">
       <rect x="${layout.markX + 1}" y="${layout.y + 1}" width="${Math.max(0, layout.markWidth - 2)}" height="25" rx="4"/>
     </clipPath>`).join("");
     const marks = markLayouts.map(layout => {
-      const { mark, markIndex, y, markX, markWidth, isActive, isPast, isSelected, color, fontSize, padding, fitted } = layout;
-      return `<g data-select="${escapeText(mark.id)}" data-anchor-target="${escapeText(mark.id)}" data-label-fit="${fitted.fit}" tabindex="0" role="button" aria-label="Select stage ${escapeText(mark.label)}, ${mark.start} to ${mark.end} ${escapeText(plan.unit)}">
+      const { mark, markIndex, track, y, markX, markWidth, isActive, isPast, isSelected, color, fontSize, padding, fitted } = layout;
+      return `<g data-select="${escapeText(mark.id)}" data-anchor-target="${escapeText(mark.id)}" data-label-fit="${fitted.fit}" data-layout-item="timeline-mark" data-layout-id="${escapeText(mark.id)}" data-layout-parent="${escapeText(mark.lane)}" data-layout-lane="${escapeText(mark.lane)}" data-layout-track="${track}" tabindex="0" role="button" aria-label="Select stage ${escapeText(mark.label)}, ${mark.start} to ${mark.end} ${escapeText(plan.unit)}">
         <title>${escapeText(mark.label)} · ${mark.start}–${mark.end} ${escapeText(plan.unit)}</title>
-        <rect x="${markX}" y="${y}" width="${markWidth}" height="27" rx="5" fill="color-mix(in srgb, ${color} ${isActive ? 24 : isPast ? 13 : 7}%, var(--sv-panel))" stroke="${isSelected ? "var(--sv-selection)" : color}" stroke-width="${isSelected || isActive ? 2 : 1}" opacity="${isPast || isActive ? 1 : .55}"/>
-        ${fitted.text ? `<text class="timeline-label" x="${markX + padding}" y="${y + 17.5}" font-size="${fontSize}" font-weight="${isActive ? 650 : 500}" clip-path="url(#timeline-label-${markIndex})">${escapeText(fitted.text)}</text>` : ""}
+        <rect data-layout-box x="${markX}" y="${y}" width="${markWidth}" height="27" rx="5" fill="color-mix(in srgb, ${color} ${isActive ? 24 : isPast ? 13 : 7}%, var(--sv-panel))" stroke="${isSelected ? "var(--sv-selection)" : color}" stroke-width="${isSelected || isActive ? 2 : 1}" opacity="${isPast || isActive ? 1 : .55}"/>
+        ${fitted.text ? `<text class="timeline-label" data-layout-label="timeline-mark" data-layout-owner="${escapeText(mark.id)}" x="${markX + padding}" y="${y + 17.5}" font-size="${fontSize}" font-weight="${isActive ? 650 : 500}" clip-path="url(#timeline-label-${markIndex})">${escapeText(fitted.text)}</text>` : ""}
       </g>`;
     }).join("");
     return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Resource timeline at ${this.checkpoint.cursor} ${escapeText(plan.unit)}">
       <defs>${laneClipDefinitions}${clipDefinitions}</defs>
-      <text x="${left}" y="18" font-size="11" fill="var(--sv-muted)">time (${escapeText(plan.unit)})</text>
+      <text data-layout-label="timeline-title" data-layout-owner="timeline:title" x="${left}" y="18" font-size="11" fill="var(--sv-muted)">time (${escapeText(plan.unit)})</text>
       ${ticks}${laneMarkup}${marks}
       <line x1="${x(this.checkpoint.cursor)}" y1="${top - 8}" x2="${x(this.checkpoint.cursor)}" y2="${timelineBottom - 5}" stroke="var(--sv-text)" stroke-width="2"/>
       <circle cx="${x(this.checkpoint.cursor)}" cy="${top - 8}" r="4" fill="var(--sv-text)"/>

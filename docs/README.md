@@ -13,6 +13,7 @@ publish or persist the viewer.
 | Convert real code into a reviewed demo | [Code-to-demo user manual](user-manual.md) |
 | Record evidence and gate reviews | [Example workbook template](example-workbook-template.md) |
 | Understand compiler and renderer boundaries | [IR design](ir-design.md) |
+| Check rendered text and element collisions | [Default-layout checking](layout-checking.md) |
 | Embed or persist a visualization | [Persistence guide](persistence.md) |
 
 ## The complete authoring path
@@ -51,6 +52,8 @@ All four traces are indexed in the [examples directory](../examples/README.md).
 ## Contracts and maintenance
 
 - [IR design](ir-design.md) defines semantic boundaries and compilation rules.
+- [Default-layout checking](layout-checking.md) defines the rendered overlap
+  audit and CI integration.
 - [Decision log](decision-log.md) records accepted design decisions.
 - [`sviz-0.2-draft.schema.json`](../schema/sviz-0.2-draft.schema.json) is the
   machine-readable trace contract.
