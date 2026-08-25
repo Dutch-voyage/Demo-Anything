@@ -1,0 +1,217 @@
+version: "0.2-draft"
+id: torch-all-to-all-sync-semantics
+title: all_to_all_single · async_op=False
+description: >-
+  An isolated synchronous-API example. ProcessGroupNCCL still executes the
+  collective on its NCCL CUDA stream, while PyTorch installs the completion
+  dependency on the current CUDA stream before returning from the Python call.
+  Shared-expert FC1 runs on a third, dedicated CUDA stream and can therefore
+  overlap NCCL even though the model's current stream is waiting. Durations are
+  schematic, not measurements.
+
+time:
+  mode: timeline
+  unit: us
+
+places:
+  - {id: sync_process, label: Rank process, role: group, layout: hierarchy}
+  - {id: sync_host, label: Host / Python thread, parent: sync_process, role: executor, layout: hierarchy}
+  - {id: sync_gpu, label: CUDA device, parent: sync_process, role: group, layout: hierarchy}
+  - {id: sync_stream_pool, label: CUDA device stream pool · 3 streams, parent: sync_process, role: group, layout: grid}
+  - {id: sync_current, label: Model / current CUDA stream, parent: sync_stream_pool, role: executor, layout: grid}
+  - {id: sync_nccl, label: ProcessGroupNCCL stream, parent: sync_stream_pool, role: executor, layout: grid}
+  - {id: sync_shared, label: Shared-expert CUDA stream, parent: sync_stream_pool, role: executor, layout: grid}
+  - {id: sync_input, label: Routed-token input, parent: sync_gpu, role: buffer, layout: memory}
+  - {id: sync_output, label: All-to-all output, parent: sync_gpu, role: buffer, layout: memory}
+  - {id: sync_shared_input, label: Shared-expert input, parent: sync_gpu, role: buffer, layout: memory}
+  - {id: sync_shared_output, label: Shared-expert FC1 output, parent: sync_gpu, role: buffer, layout: memory}
+
+resources:
+  - id: sync_host_thread
+    label: Host submission thread
+    owner: sync_host
+    kind: coordination
+    capacity: {threads: 1}
+  - id: sync_current_stream
+    label: Model / current CUDA stream
+    owner: sync_current
+    kind: execution
+    capacity: {streams: 1}
+  - id: sync_nccl_stream
+    label: ProcessGroupNCCL stream
+    owner: sync_nccl
+    kind: execution
+    capacity: {streams: 1}
+  - id: sync_shared_expert_stream
+    label: Shared-expert CUDA stream
+    owner: sync_shared
+    kind: execution
+    capacity: {streams: 1}
+  - id: sync_transport
+    label: NCCL peer transport
+    owner: sync_payload_path
+    kind: bandwidth
+    capacity: {channels: 1}
+
+links:
+  - id: sync_payload_path
+    label: NCCL all-to-all payload path
+    from: sync_input
+    to: sync_output
+    directed: true
+    resource: sync_transport
+
+entities:
+  - {id: sync_payload, label: Routed expert tokens, kind: tensor, quantity: {bytes: 4096}}
+  - {id: sync_shared_tokens, label: Local shared-expert tokens, kind: tensor, quantity: {bytes: 4096}}
+  - {id: sync_shared_fc1, label: Shared-expert FC1 activations, kind: tensor, quantity: {bytes: 8192}}
+
+initial_materializations:
+  - {id: sync_payload.input, entity: sync_payload, place: sync_input}
+  - {id: sync_shared_tokens.input, entity: sync_shared_tokens, place: sync_shared_input}
+
+operations:
+  - {id: sync_all_to_all, label: "all_to_all_single(async_op=False)", kind: collective}
+  - {id: sync_shared_expert, label: Shared-expert FC1, kind: compute}
+  - {id: sync_consume, label: Consume routed and shared-expert results, kind: compute}
+
+flows:
+  - {id: sync_payload_flow, label: NCCL routed-token exchange, entity: sync_payload, stages: [sync_comm]}
+
+stages:
+  - id: sync_submit
+    label: Python submits A2A and internally requests completion ordering
+    operation: sync_all_to_all
+    kind: control
+    at: sync_host
+    reads: [sync_payload.input]
+    claims: [{resource: sync_host_thread, amount: {threads: 1}}]
+    start: 0.0
+    duration: 0.3
+
+  - id: sync_comm
+    label: NCCL stream executes grouped all-to-all transfers
+    operation: sync_all_to_all
+    kind: transfer
+    link: sync_payload_path
+    flow: sync_payload_flow
+    reads: [sync_payload.input]
+    after: [sync_submit]
+    claims:
+      - {resource: sync_nccl_stream, amount: {streams: 1}}
+      - {resource: sync_transport, amount: {channels: 1}}
+    effects:
+      - {action: create, materialization: sync_payload.output, entity: sync_payload, place: sync_output, from: sync_payload.input}
+    start: 0.3
+    duration: 2.0
+
+  - id: sync_current_wait
+    label: Internal wait orders the current stream behind NCCL completion
+    operation: sync_all_to_all
+    kind: wait
+    at: sync_current
+    reads: [sync_payload.input]
+    after: [sync_submit]
+    claims: [{resource: sync_current_stream, amount: {streams: 1}}]
+    start: 0.3
+    duration: 2.0
+
+  - id: sync_python_returns
+    label: Python call returns after installing the stream dependency
+    operation: sync_all_to_all
+    kind: control
+    at: sync_host
+    after: [sync_submit]
+    claims: [{resource: sync_host_thread, amount: {threads: 1}}]
+    start: 0.3
+    duration: 0.2
+
+  - id: sync_queue_shared_expert
+    label: Host queues FC1 on the dedicated shared-expert stream
+    operation: sync_shared_expert
+    kind: control
+    at: sync_host
+    reads: [sync_shared_tokens.input]
+    after: [sync_python_returns]
+    claims: [{resource: sync_host_thread, amount: {threads: 1}}]
+    start: 0.5
+    duration: 0.2
+
+  - id: sync_shared_expert_fc1
+    label: Shared-expert FC1 overlaps NCCL on its dedicated stream
+    operation: sync_shared_expert
+    kind: compute
+    at: sync_shared
+    reads: [sync_shared_tokens.input]
+    after: [sync_queue_shared_expert]
+    claims: [{resource: sync_shared_expert_stream, amount: {streams: 1}}]
+    effects:
+      - {action: create, materialization: sync_shared_fc1.output, entity: sync_shared_fc1, place: sync_shared_output, from: sync_shared_tokens.input}
+    start: 0.7
+    duration: 1.2
+
+  - id: sync_consume_outputs
+    label: Current stream consumes both completed results
+    operation: sync_consume
+    kind: compute
+    at: sync_current
+    reads: [sync_payload.output, sync_shared_fc1.output]
+    after: [sync_comm, sync_shared_expert_fc1]
+    claims: [{resource: sync_current_stream, amount: {streams: 1}}]
+    start: 2.3
+    duration: 0.5
+
+checkpoints:
+  - id: sync_call
+    label: Synchronous API submits the collective
+    at: 0.0
+    narrative: >-
+      `async_op=False` does not mean that NCCL executes on the Python thread or
+      that the CUDA device is globally synchronized. The host submits the same
+      collective to ProcessGroupNCCL.
+    focus: [sync_submit, sync_host_thread, sync_nccl_stream]
+  - id: sync_returned
+    label: Python has returned, but NCCL is still active
+    at: 0.6
+    narrative: >-
+      The Python call can return while the NCCL stream is occupied. Before
+      returning, PyTorch has installed a dependency that stalls later work on
+      the current CUDA stream until NCCL completes.
+    focus: [sync_python_returns, sync_comm, sync_current_wait, sync_nccl_stream, sync_current_stream]
+  - id: sync_overlap
+    label: Dedicated shared-expert and NCCL streams overlap
+    at: 1.2
+    narrative: >-
+      NCCL occupies the ProcessGroupNCCL stream while shared-expert FC1 occupies
+      its dedicated CUDA stream. `async_op=False` only joined the model/current
+      stream, so it does not prevent this independently scheduled overlap.
+    focus: [sync_comm, sync_current_wait, sync_shared_expert_fc1, sync_nccl_stream, sync_shared_expert_stream]
+  - id: sync_waiting
+    label: Shared expert is done while the model stream still waits
+    at: 2.0
+    narrative: >-
+      Shared-expert FC1 has completed, but NCCL is still active. The
+      model/current stream cannot perform later routed-token work because the
+      synchronous API already placed its completion dependency.
+    focus: [sync_comm, sync_current_wait, sync_shared_fc1.output]
+  - id: sync_done
+    label: Routed and shared-expert results are consumed
+    at: 2.3
+    narrative: >-
+      NCCL releases its stream and the model/current stream resumes. The shared
+      expert overlapped successfully, but the caller had no freedom to place
+      unrelated model-stream work ahead of the implicit join.
+    focus: [sync_consume_outputs, sync_payload.output, sync_shared_fc1.output]
+
+view:
+  system_roots: [sync_host, sync_stream_pool, sync_gpu]
+  draggable: [sync_host, sync_gpu, sync_stream_pool, sync_current, sync_nccl, sync_shared]
+  timeline_resources:
+    - sync_host_thread
+    - sync_current_stream
+    - sync_nccl_stream
+    - sync_shared_expert_stream
+    - sync_transport
+  importance: [sync_all_to_all, sync_comm, sync_current_wait, sync_shared_expert_fc1]
+  show_source: true
+  show_compiled: true

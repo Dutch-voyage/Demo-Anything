@@ -1,0 +1,236 @@
+version: "0.2-draft"
+id: torch-all-to-all-async-shared-expert
+title: all_to_all_single · async_op=True with shared-expert overlap
+description: >-
+  An isolated asynchronous-API example. ProcessGroupNCCL occupies its own CUDA
+  stream while shared-expert FC1 runs on a dedicated CUDA stream. The returned
+  Work handle also leaves the model/current stream available for independent
+  work until the caller explicitly joins NCCL completion. Durations are
+  schematic, not measurements.
+
+time:
+  mode: timeline
+  unit: us
+
+places:
+  - {id: async_process, label: Rank process, role: group, layout: hierarchy}
+  - {id: async_host, label: Host / Python thread, parent: async_process, role: executor, layout: hierarchy}
+  - {id: async_gpu, label: CUDA device, parent: async_process, role: group, layout: hierarchy}
+  - {id: async_stream_pool, label: CUDA device stream pool · 3 streams, parent: async_process, role: group, layout: grid}
+  - {id: async_current, label: Model / current CUDA stream, parent: async_stream_pool, role: executor, layout: grid}
+  - {id: async_nccl, label: ProcessGroupNCCL stream, parent: async_stream_pool, role: executor, layout: grid}
+  - {id: async_shared, label: Shared-expert CUDA stream, parent: async_stream_pool, role: executor, layout: grid}
+  - {id: async_input, label: Routed-token input, parent: async_gpu, role: buffer, layout: memory}
+  - {id: async_output, label: All-to-all output, parent: async_gpu, role: buffer, layout: memory}
+  - {id: async_shared_input, label: Shared-expert input, parent: async_gpu, role: buffer, layout: memory}
+  - {id: async_shared_output, label: Shared-expert FC1 output, parent: async_gpu, role: buffer, layout: memory}
+
+resources:
+  - id: async_host_thread
+    label: Host submission thread
+    owner: async_host
+    kind: coordination
+    capacity: {threads: 1}
+  - id: async_current_stream
+    label: Model / current CUDA stream
+    owner: async_current
+    kind: execution
+    capacity: {streams: 1}
+  - id: async_nccl_stream
+    label: ProcessGroupNCCL stream
+    owner: async_nccl
+    kind: execution
+    capacity: {streams: 1}
+  - id: async_shared_expert_stream
+    label: Shared-expert CUDA stream
+    owner: async_shared
+    kind: execution
+    capacity: {streams: 1}
+  - id: async_transport
+    label: NCCL peer transport
+    owner: async_payload_path
+    kind: bandwidth
+    capacity: {channels: 1}
+
+links:
+  - id: async_payload_path
+    label: NCCL all-to-all payload path
+    from: async_input
+    to: async_output
+    directed: true
+    resource: async_transport
+
+entities:
+  - {id: async_payload, label: Routed expert tokens, kind: tensor, quantity: {bytes: 4096}}
+  - {id: async_shared_tokens, label: Local shared-expert tokens, kind: tensor, quantity: {bytes: 4096}}
+  - {id: async_shared_fc1, label: Shared-expert FC1 activations, kind: tensor, quantity: {bytes: 8192}}
+  - {id: async_work, label: ProcessGroupNCCL Work handle, kind: completion-handle, quantity: {handles: 1}}
+
+initial_materializations:
+  - {id: async_payload.input, entity: async_payload, place: async_input}
+  - {id: async_shared_tokens.input, entity: async_shared_tokens, place: async_shared_input}
+
+operations:
+  - {id: async_all_to_all, label: "all_to_all_single(async_op=True)", kind: collective}
+  - {id: async_shared_expert, label: Shared-expert FC1, kind: compute}
+  - {id: async_model_work, label: Independent model-stream work, kind: compute}
+  - {id: async_consume, label: Consume routed and shared-expert results, kind: compute}
+
+flows:
+  - {id: async_payload_flow, label: NCCL routed-token exchange, entity: async_payload, stages: [async_comm]}
+
+stages:
+  - id: async_submit
+    label: Python submits A2A and receives a Work handle
+    operation: async_all_to_all
+    kind: control
+    at: async_host
+    reads: [async_payload.input]
+    claims: [{resource: async_host_thread, amount: {threads: 1}}]
+    effects:
+      - {action: create, materialization: async_work.live, entity: async_work, place: async_host}
+    start: 0.0
+    duration: 0.3
+
+  - id: async_comm
+    label: NCCL stream executes grouped all-to-all transfers
+    operation: async_all_to_all
+    kind: transfer
+    link: async_payload_path
+    flow: async_payload_flow
+    reads: [async_payload.input]
+    after: [async_submit]
+    claims:
+      - {resource: async_nccl_stream, amount: {streams: 1}}
+      - {resource: async_transport, amount: {channels: 1}}
+    effects:
+      - {action: create, materialization: async_payload.output, entity: async_payload, place: async_output, from: async_payload.input}
+    start: 0.3
+    duration: 2.0
+
+  - id: async_queue_shared_expert
+    label: Host queues FC1 on the dedicated shared-expert stream
+    operation: async_shared_expert
+    kind: control
+    at: async_host
+    reads: [async_shared_tokens.input, async_work.live]
+    after: [async_submit]
+    claims: [{resource: async_host_thread, amount: {threads: 1}}]
+    start: 0.3
+    duration: 0.2
+
+  - id: async_shared_expert_fc1
+    label: Shared-expert FC1 overlaps NCCL on its dedicated stream
+    operation: async_shared_expert
+    kind: compute
+    at: async_shared
+    reads: [async_shared_tokens.input]
+    after: [async_queue_shared_expert]
+    claims: [{resource: async_shared_expert_stream, amount: {streams: 1}}]
+    effects:
+      - {action: create, materialization: async_shared_fc1.output, entity: async_shared_fc1, place: async_shared_output, from: async_shared_tokens.input}
+    start: 0.5
+    duration: 1.2
+
+  - id: async_queue_model_work
+    label: Host queues independent model-stream work before Work.wait
+    operation: async_model_work
+    kind: control
+    at: async_host
+    reads: [async_work.live]
+    after: [async_queue_shared_expert]
+    claims: [{resource: async_host_thread, amount: {threads: 1}}]
+    start: 0.5
+    duration: 0.2
+
+  - id: async_current_model_work
+    label: Model/current stream uses the caller-controlled overlap window
+    operation: async_model_work
+    kind: compute
+    at: async_current
+    after: [async_queue_model_work]
+    claims: [{resource: async_current_stream, amount: {streams: 1}}]
+    start: 0.7
+    duration: 0.8
+
+  - id: async_request_wait
+    label: Python requests Work.wait after queuing independent work
+    operation: async_all_to_all
+    kind: control
+    at: async_host
+    reads: [async_work.live]
+    after: [async_queue_model_work]
+    claims: [{resource: async_host_thread, amount: {threads: 1}}]
+    start: 0.7
+    duration: 0.2
+
+  - id: async_current_wait
+    label: Work.wait orders the current stream behind NCCL completion
+    operation: async_all_to_all
+    kind: wait
+    at: async_current
+    reads: [async_work.live]
+    after: [async_current_model_work, async_request_wait]
+    claims: [{resource: async_current_stream, amount: {streams: 1}}]
+    effects: [{action: retire, materialization: async_work.live}]
+    start: 1.5
+    duration: 0.8
+
+  - id: async_consume_outputs
+    label: Current stream consumes routed tokens and shared-expert output
+    operation: async_consume
+    kind: compute
+    at: async_current
+    reads: [async_payload.output, async_shared_fc1.output]
+    after: [async_comm, async_current_wait]
+    claims: [{resource: async_current_stream, amount: {streams: 1}}]
+    start: 2.3
+    duration: 0.5
+
+checkpoints:
+  - id: async_call
+    label: Asynchronous API returns explicit completion ownership
+    at: 0.0
+    narrative: >-
+      `async_op=True` submits the collective to ProcessGroupNCCL and returns a
+      Work handle. No routed-token consumer may run yet, but the caller has not
+      joined NCCL completion to the current CUDA stream.
+    focus: [async_submit, async_work.live, async_nccl_stream]
+  - id: async_overlap
+    label: Three CUDA streams make independent progress
+    at: 1.0
+    narrative: >-
+      NCCL owns the ProcessGroupNCCL stream and transport while independent
+      shared-expert FC1 owns its dedicated stream. Because the caller delayed
+      the join, the model/current stream also executes independent work. The
+      shared-expert overlap itself does not require `async_op=True`; the extra
+      current-stream scheduling freedom does.
+    focus: [async_comm, async_shared_expert_fc1, async_current_model_work, async_nccl_stream, async_shared_expert_stream, async_current_stream]
+  - id: async_join
+    label: The caller chooses the completion join point
+    at: 1.8
+    narrative: >-
+      Independent model-stream work and shared-expert FC1 have finished.
+      `Work.wait()` now holds the model/current stream behind unfinished NCCL.
+      The host did not need a device-wide synchronize.
+    focus: [async_comm, async_current_wait, async_request_wait]
+  - id: async_done
+    label: Routed-token consumption starts after the explicit join
+    at: 2.3
+    narrative: >-
+      NCCL has released its stream, the Work dependency is satisfied, and both
+      routed and shared-expert outputs are safe to consume.
+    focus: [async_consume_outputs, async_payload.output, async_shared_fc1.output, async_nccl_stream]
+
+view:
+  system_roots: [async_host, async_stream_pool, async_gpu]
+  draggable: [async_host, async_gpu, async_stream_pool, async_current, async_nccl, async_shared]
+  timeline_resources:
+    - async_host_thread
+    - async_current_stream
+    - async_nccl_stream
+    - async_shared_expert_stream
+    - async_transport
+  importance: [async_all_to_all, async_work.live, async_comm, async_shared_expert_fc1, async_current_model_work, async_current_wait]
+  show_source: true
+  show_compiled: true

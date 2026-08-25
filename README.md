@@ -15,7 +15,7 @@ the renderer contains no workload-specific branches.
 python3.12 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 
-.venv/bin/sviz validate examples/flash_attention_vnext.yaml examples/deepep_vnext.yaml
+.venv/bin/sviz validate examples/flash_attention_vnext.yaml examples/deepep_vnext.yaml examples/torch_all_to_all_single_vnext.yaml examples/torch_all_to_all_sync_vnext.yaml examples/torch_all_to_all_async_shared_expert_vnext.yaml
 .venv/bin/sviz compile examples/flash_attention_vnext.yaml -o /tmp/flash-attention.json
 .venv/bin/sviz view examples/flash_attention_vnext.yaml
 .venv/bin/sviz export examples/flash_attention_vnext.yaml --format bundle -o dist/flash
@@ -44,6 +44,16 @@ browser's rendered bounds; see the
   consumes a four-token compressed MLA prompt cache.
 - [`mla_decode_vnext.yaml`](examples/mla_decode_vnext.yaml) appends one token
   and attends directly over the growing compressed cache.
+- [`torch_all_to_all_single_vnext.yaml`](examples/torch_all_to_all_single_vnext.yaml)
+  shows dynamic split exchange, D2H host synchronization, asynchronous
+  ProcessGroupNCCL streams, grouped peer transfers, and source-major outputs.
+- [`torch_all_to_all_sync_vnext.yaml`](examples/torch_all_to_all_sync_vnext.yaml)
+  isolates `async_op=False`: NCCL still occupies its own stream, while PyTorch
+  installs current-stream completion ordering before returning; a dedicated
+  shared-expert stream can still overlap.
+- [`torch_all_to_all_async_shared_expert_vnext.yaml`](examples/torch_all_to_all_async_shared_expert_vnext.yaml)
+  isolates `async_op=True`: shared-expert and NCCL streams overlap while the
+  model/current stream remains usable before an explicit `Work.wait()`.
 
 The guides are indexed in [`docs/examples`](docs/examples/README.md). The FA2
 and DeepEP source-to-display workflows are documented in

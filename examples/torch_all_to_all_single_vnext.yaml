@@ -1,0 +1,405 @@
+version: "0.2-draft"
+id: torch-all-to-all-single-two-ranks
+title: torch.distributed.all_to_all_single · dynamic splits
+description: >-
+  Two NCCL ranks exchange uneven tensor chunks. The trace exposes the control
+  path that a minimal equal-split example hides: device count exchange, D2H
+  split materialization, host synchronization, ProcessGroupNCCL stream
+  handoff, grouped peer transfers, delayed completion, and source-major output.
+  Ordered steps are explanatory and do not represent measured timing.
+
+time:
+  mode: steps
+
+places:
+  - {id: process_group, label: Two-rank process group, role: group, layout: network}
+  - {id: rank0, label: Rank 0 process, parent: process_group, role: group, layout: hierarchy}
+  - {id: rank0_host, label: Rank 0 · Host / CPU, parent: rank0, role: executor, layout: hierarchy}
+  - {id: rank0_pinned_counts, label: Pinned split buffers, parent: rank0_host, role: buffer, layout: memory}
+  - {id: rank0_gpu, label: Rank 0 · CUDA device 0, parent: rank0, role: executor, layout: hierarchy}
+  - {id: rank0_counts, label: Device split counts, parent: rank0_gpu, role: buffer, layout: memory}
+  - {id: rank0_input, label: Payload input, parent: rank0_gpu, role: buffer, layout: memory}
+  - {id: rank0_output, label: Payload output, parent: rank0_gpu, role: buffer, layout: memory}
+  - {id: rank1, label: Rank 1 process, parent: process_group, role: group, layout: hierarchy}
+  - {id: rank1_host, label: Rank 1 · Host / CPU, parent: rank1, role: executor, layout: hierarchy}
+  - {id: rank1_pinned_counts, label: Pinned split buffers, parent: rank1_host, role: buffer, layout: memory}
+  - {id: rank1_gpu, label: Rank 1 · CUDA device 1, parent: rank1, role: executor, layout: hierarchy}
+  - {id: rank1_counts, label: Device split counts, parent: rank1_gpu, role: buffer, layout: memory}
+  - {id: rank1_input, label: Payload input, parent: rank1_gpu, role: buffer, layout: memory}
+  - {id: rank1_output, label: Payload output, parent: rank1_gpu, role: buffer, layout: memory}
+
+resources:
+  - id: peer_channels
+    label: NCCL-managed peer channels
+    owner: rank0_rank1
+    kind: bandwidth
+    capacity: {channels: 2}
+  - id: d2h_channels
+    label: Device-to-host count copies
+    owner: process_group
+    kind: bandwidth
+    capacity: {channels: 2}
+  - id: host_control
+    label: Host count synchronization
+    owner: process_group
+    kind: coordination
+    capacity: {threads: 2}
+  - id: rank0_user_stream
+    label: Rank 0 current CUDA stream
+    owner: rank0_gpu
+    kind: execution
+    capacity: {streams: 1}
+  - id: rank1_user_stream
+    label: Rank 1 current CUDA stream
+    owner: rank1_gpu
+    kind: execution
+    capacity: {streams: 1}
+  - id: rank0_nccl_stream
+    label: Rank 0 ProcessGroupNCCL stream
+    owner: rank0_gpu
+    kind: execution
+    capacity: {streams: 1}
+  - id: rank1_nccl_stream
+    label: Rank 1 ProcessGroupNCCL stream
+    owner: rank1_gpu
+    kind: execution
+    capacity: {streams: 1}
+
+links:
+  - id: rank0_rank1
+    label: Bidirectional CUDA peer path
+    from: rank0_gpu
+    to: rank1_gpu
+    directed: false
+    resource: peer_channels
+  - id: rank0_d2h
+    label: Rank 0 D2H count copy
+    from: rank0_counts
+    to: rank0_pinned_counts
+    directed: true
+    resource: d2h_channels
+  - id: rank1_d2h
+    label: Rank 1 D2H count copy
+    from: rank1_counts
+    to: rank1_pinned_counts
+    directed: true
+    resource: d2h_channels
+
+entities:
+  - id: send_counts0
+    label: "R0 send splits · [1, 3]"
+    kind: split-vector
+    quantity: {counts: 2, bytes: 8}
+    attrs: {dtype: int32, order: destination}
+  - id: send_counts1
+    label: "R1 send splits · [2, 2]"
+    kind: split-vector
+    quantity: {counts: 2, bytes: 8}
+    attrs: {dtype: int32, order: destination}
+  - id: recv_counts0
+    label: "R0 receive splits · [1, 2]"
+    kind: split-vector
+    quantity: {counts: 2, bytes: 8}
+    attrs: {dtype: int32, order: source}
+  - id: recv_counts1
+    label: "R1 receive splits · [3, 2]"
+    kind: split-vector
+    quantity: {counts: 2, bytes: 8}
+    attrs: {dtype: int32, order: source}
+  - id: split_args0
+    label: Rank 0 Python split lists
+    kind: host-control
+    quantity: {lists: 2}
+  - id: split_args1
+    label: Rank 1 Python split lists
+    kind: host-control
+    quantity: {lists: 2}
+  - id: chunk00
+    label: "R0→R0 · [0]"
+    kind: tensor-chunk
+    quantity: {elements: 1, bytes: 8}
+    attrs: {source_rank: 0, destination_rank: 0, dtype: int64}
+  - id: chunk01
+    label: "R0→R1 · [1, 2, 3]"
+    kind: tensor-chunk
+    quantity: {elements: 3, bytes: 24}
+    attrs: {source_rank: 0, destination_rank: 1, dtype: int64}
+  - id: chunk10
+    label: "R1→R0 · [10, 11]"
+    kind: tensor-chunk
+    quantity: {elements: 2, bytes: 16}
+    attrs: {source_rank: 1, destination_rank: 0, dtype: int64}
+  - id: chunk11
+    label: "R1→R1 · [12, 13]"
+    kind: tensor-chunk
+    quantity: {elements: 2, bytes: 16}
+    attrs: {source_rank: 1, destination_rank: 1, dtype: int64}
+
+initial_materializations:
+  - {id: send_counts0.gpu, entity: send_counts0, place: rank0_counts}
+  - {id: send_counts1.gpu, entity: send_counts1, place: rank1_counts}
+  - {id: chunk00.r0_input, entity: chunk00, place: rank0_input, attrs: {input_offset: 0}}
+  - {id: chunk01.r0_input, entity: chunk01, place: rank0_input, attrs: {input_offset: 1}}
+  - {id: chunk10.r1_input, entity: chunk10, place: rank1_input, attrs: {input_offset: 0}}
+  - {id: chunk11.r1_input, entity: chunk11, place: rank1_input, attrs: {input_offset: 2}}
+
+operations:
+  - {id: count_setup, label: Exchange and materialize split counts, kind: control}
+  - id: all_to_all
+    label: torch.distributed.all_to_all_single
+    kind: collective
+    tags: {backend: nccl, split: variable, world_size: 2, async_op: true}
+  - {id: overlap_work, label: Independent CUDA work, kind: compute}
+
+flows:
+  - {id: count_flow, label: Device count exchange, stages: [exchange_counts]}
+  - {id: rank0_payload_flow, label: Rank 0 grouped payloads, stages: [nccl_group0]}
+  - {id: rank1_payload_flow, label: Rank 1 grouped payloads, stages: [nccl_group1]}
+
+stages:
+  - id: exchange_counts
+    label: NCCL exchanges one INT32 count per peer
+    operation: count_setup
+    kind: transfer
+    link: rank0_rank1
+    flow: count_flow
+    reads: [send_counts0.gpu, send_counts1.gpu]
+    claims:
+      - {resource: peer_channels, amount: {channels: 2}}
+      - {resource: rank0_nccl_stream, amount: {streams: 1}}
+      - {resource: rank1_nccl_stream, amount: {streams: 1}}
+    effects:
+      - action: create
+        materialization: recv_counts0.gpu
+        entity: recv_counts0
+        place: rank0_counts
+        attrs: {assembled_from: [send_counts0, send_counts1]}
+      - action: create
+        materialization: recv_counts1.gpu
+        entity: recv_counts1
+        place: rank1_counts
+        attrs: {assembled_from: [send_counts0, send_counts1]}
+    step: 1
+
+  - id: d2h_counts0
+    label: Copy rank 0 send/receive counts to pinned host memory
+    operation: count_setup
+    kind: transfer
+    link: rank0_d2h
+    reads: [send_counts0.gpu, recv_counts0.gpu]
+    after: [exchange_counts]
+    claims: [{resource: d2h_channels, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: send_counts0.host, entity: send_counts0, place: rank0_pinned_counts, from: send_counts0.gpu}
+      - {action: create, materialization: recv_counts0.host, entity: recv_counts0, place: rank0_pinned_counts, from: recv_counts0.gpu}
+    step: 2
+
+  - id: d2h_counts1
+    label: Copy rank 1 send/receive counts to pinned host memory
+    operation: count_setup
+    kind: transfer
+    link: rank1_d2h
+    reads: [send_counts1.gpu, recv_counts1.gpu]
+    after: [exchange_counts]
+    claims: [{resource: d2h_channels, amount: {channels: 1}}]
+    effects:
+      - {action: create, materialization: send_counts1.host, entity: send_counts1, place: rank1_pinned_counts, from: send_counts1.gpu}
+      - {action: create, materialization: recv_counts1.host, entity: recv_counts1, place: rank1_pinned_counts, from: recv_counts1.gpu}
+    step: 2
+
+  - id: host_sync0
+    label: Rank 0 waits for D2H and builds Python split lists
+    operation: count_setup
+    kind: sync
+    at: rank0_host
+    reads: [send_counts0.host, recv_counts0.host]
+    after: [d2h_counts0]
+    claims: [{resource: host_control, amount: {threads: 1}}]
+    effects: [{action: create, materialization: split_args0.ready, entity: split_args0, place: rank0_host}]
+    step: 3
+
+  - id: host_sync1
+    label: Rank 1 waits for D2H and builds Python split lists
+    operation: count_setup
+    kind: sync
+    at: rank1_host
+    reads: [send_counts1.host, recv_counts1.host]
+    after: [d2h_counts1]
+    claims: [{resource: host_control, amount: {threads: 1}}]
+    effects: [{action: create, materialization: split_args1.ready, entity: split_args1, place: rank1_host}]
+    step: 3
+
+  - id: stream_handoff0
+    label: Rank 0 NCCL stream waits for producer readiness
+    operation: all_to_all
+    kind: sync
+    at: rank0_gpu
+    reads: [split_args0.ready, chunk00.r0_input, chunk01.r0_input]
+    after: [host_sync0]
+    claims:
+      - {resource: rank0_user_stream, amount: {streams: 1}}
+      - {resource: rank0_nccl_stream, amount: {streams: 1}}
+    step: 4
+
+  - id: stream_handoff1
+    label: Rank 1 NCCL stream waits for producer readiness
+    operation: all_to_all
+    kind: sync
+    at: rank1_gpu
+    reads: [split_args1.ready, chunk10.r1_input, chunk11.r1_input]
+    after: [host_sync1]
+    claims:
+      - {resource: rank1_user_stream, amount: {streams: 1}}
+      - {resource: rank1_nccl_stream, amount: {streams: 1}}
+    step: 4
+
+  - id: nccl_group0
+    label: NCCL manages rank 0 grouped Send/Recv work
+    operation: all_to_all
+    kind: transfer
+    link: rank0_rank1
+    flow: rank0_payload_flow
+    reads: [split_args0.ready, chunk00.r0_input, chunk01.r0_input]
+    after: [stream_handoff0]
+    claims:
+      - {resource: peer_channels, amount: {channels: 1}}
+      - {resource: rank0_nccl_stream, amount: {streams: 1}}
+    effects:
+      - {action: create, materialization: chunk00.r0_output, entity: chunk00, place: rank0_output, from: chunk00.r0_input, attrs: {output_offset: 0, source_rank: 0}}
+      - {action: create, materialization: chunk01.r1_output, entity: chunk01, place: rank1_output, from: chunk01.r0_input, attrs: {output_offset: 0, source_rank: 0}}
+    step: 5
+
+  - id: nccl_group1
+    label: NCCL manages rank 1 grouped Send/Recv work
+    operation: all_to_all
+    kind: transfer
+    link: rank0_rank1
+    flow: rank1_payload_flow
+    reads: [split_args1.ready, chunk10.r1_input, chunk11.r1_input]
+    after: [stream_handoff1]
+    claims:
+      - {resource: peer_channels, amount: {channels: 1}}
+      - {resource: rank1_nccl_stream, amount: {streams: 1}}
+    effects:
+      - {action: create, materialization: chunk10.r0_output, entity: chunk10, place: rank0_output, from: chunk10.r1_input, attrs: {output_offset: 1, source_rank: 1}}
+      - {action: create, materialization: chunk11.r1_output, entity: chunk11, place: rank1_output, from: chunk11.r1_input, attrs: {output_offset: 3, source_rank: 1}}
+    step: 5
+
+  - id: independent_compute0
+    label: Rank 0 enqueues independent compute before Work.wait
+    operation: overlap_work
+    kind: compute
+    at: rank0_gpu
+    after: [stream_handoff0]
+    claims: [{resource: rank0_user_stream, amount: {streams: 1}}]
+    step: 5
+
+  - id: independent_compute1
+    label: Rank 1 enqueues independent compute before Work.wait
+    operation: overlap_work
+    kind: compute
+    at: rank1_gpu
+    after: [stream_handoff1]
+    claims: [{resource: rank1_user_stream, amount: {streams: 1}}]
+    step: 5
+
+  - id: work_wait0
+    label: Rank 0 Work.wait joins NCCL completion to the current stream
+    operation: all_to_all
+    kind: wait
+    at: rank0_gpu
+    reads: [chunk00.r0_output, chunk10.r0_output]
+    after: [nccl_group0, nccl_group1, independent_compute0]
+    claims: [{resource: rank0_user_stream, amount: {streams: 1}}]
+    step: 6
+
+  - id: work_wait1
+    label: Rank 1 Work.wait joins NCCL completion to the current stream
+    operation: all_to_all
+    kind: wait
+    at: rank1_gpu
+    reads: [chunk01.r1_output, chunk11.r1_output]
+    after: [nccl_group0, nccl_group1, independent_compute1]
+    claims: [{resource: rank1_user_stream, amount: {streams: 1}}]
+    step: 6
+
+checkpoints:
+  - id: inputs
+    label: Device routing produced uneven send counts
+    step: 0
+    narrative: >-
+      Rank 0 sends `[1, 3]` elements and rank 1 sends `[2, 2]`. Payload inputs
+      are destination-major, but the Python split lists do not exist yet.
+    focus: [send_counts0.gpu, send_counts1.gpu, chunk00.r0_input, chunk01.r0_input, chunk10.r1_input, chunk11.r1_input]
+  - id: count_exchange
+    label: NCCL exchanges receive counts on device
+    step: 1
+    narrative: >-
+      A small NCCL exchange sends one INT32 count per peer. It produces receive
+      splits `[1, 2]` on rank 0 and `[3, 2]` on rank 1 without involving the
+      host.
+    focus: [exchange_counts, recv_counts0.gpu, recv_counts1.gpu]
+  - id: d2h
+    label: Split vectors move from device to pinned host memory
+    step: 2
+    narrative: >-
+      Both ranks enqueue D2H copies for their send and receive vectors. The
+      copies can be asynchronous, but Python cannot consume the lists until
+      their producing CUDA work has completed.
+    focus: [d2h_counts0, d2h_counts1, d2h_channels]
+  - id: host_counts
+    label: Host synchronization materializes API arguments
+    step: 3
+    narrative: >-
+      Calling `.cpu().tolist()` or an equivalent path waits for D2H completion.
+      This is the host-visible synchronization point required because
+      `all_to_all_single` accepts split sizes as host vectors.
+    focus: [host_sync0, host_sync1, split_args0.ready, split_args1.ready]
+  - id: stream_handoff
+    label: ProcessGroupNCCL establishes stream dependencies
+    step: 4
+    narrative: >-
+      With `async_op=True`, ProcessGroupNCCL records producer readiness and
+      orders its NCCL stream after the current CUDA stream. The call returns a
+      `Work` handle instead of immediately joining completion back.
+    focus: [stream_handoff0, stream_handoff1, rank0_nccl_stream, rank1_nccl_stream]
+  - id: grouped_exchange
+    label: NCCL owns grouped peer progress while compute overlaps
+    step: 5
+    narrative: >-
+      For variable splits, ProcessGroupNCCL brackets per-peer `ncclSend` and
+      `ncclRecv` operations with `ncclGroupStart`/`ncclGroupEnd`. NCCL manages
+      matching, channels, protocols, and kernel progress. Independent work on
+      the current streams can overlap because `Work.wait()` is delayed.
+    focus: [nccl_group0, nccl_group1, independent_compute0, independent_compute1, peer_channels]
+  - id: joined
+    label: Work.wait joins communication to the consumer streams
+    step: 6
+    narrative: >-
+      Each rank installs the NCCL completion dependency before consuming its
+      output. Rank 0 receives `[0 | 10, 11]`; rank 1 receives
+      `[1, 2, 3 | 12, 13]`.
+    focus: [work_wait0, work_wait1, chunk00.r0_output, chunk10.r0_output, chunk01.r1_output, chunk11.r1_output]
+  - id: outputs
+    label: Variable-size outputs are grouped by source
+    step: 7
+    narrative: >-
+      Rank 0 reads `[0, 10, 11]` and rank 1 reads `[1, 2, 3, 12, 13]`.
+      Original inputs remain resident because the collective copies rather than
+      moves each chunk.
+    focus: [chunk00.r0_output, chunk10.r0_output, chunk01.r1_output, chunk11.r1_output]
+
+view:
+  system_roots: [rank0_host, rank0_gpu, rank1_host, rank1_gpu]
+  draggable: [rank0_host, rank0_gpu, rank1_host, rank1_gpu]
+  timeline_resources:
+    - peer_channels
+    - d2h_channels
+    - host_control
+    - rank0_user_stream
+    - rank0_nccl_stream
+    - rank1_user_stream
+    - rank1_nccl_stream
+  importance: [count_flow, all_to_all, rank0_payload_flow, rank1_payload_flow]
+  show_source: true
+  show_compiled: true

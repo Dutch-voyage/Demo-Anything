@@ -285,6 +285,9 @@ def test_only_vnext_examples_and_schema_are_kept() -> None:
         "flash_attention_vnext.yaml",
         "mla_decode_vnext.yaml",
         "mla_prefill_vnext.yaml",
+        "torch_all_to_all_async_shared_expert_vnext.yaml",
+        "torch_all_to_all_single_vnext.yaml",
+        "torch_all_to_all_sync_vnext.yaml",
     }
     assert {path.name for path in (ROOT / "schema").glob("*.json")} == {
         "sviz-0.2-draft.schema.json",
