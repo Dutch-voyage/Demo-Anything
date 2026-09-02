@@ -10,6 +10,7 @@ publish or persist the viewer.
 | --- | --- |
 | Understand what `sviz` does | [Project README](../README.md) |
 | Learn the IR and write a first trace | [IR authoring guide](ir-authoring-guide.md) |
+| Design two views that explain or verify each other | [Corresponding-view design guide](corresponding-view-design-guide.md) |
 | Convert real code into a reviewed demo | [Code-to-demo user manual](user-manual.md) |
 | Record evidence and gate reviews | [Example workbook template](example-workbook-template.md) |
 | Understand compiler and renderer boundaries | [IR design](ir-design.md) |
