@@ -7,7 +7,7 @@ from compiled coordinates alone.
 ## Reader action
 
 Select **Check layout** in the visualization header. The audit temporarily
-renders every checkpoint in both System and Timeline at:
+renders every checkpoint in every compiled spatial and timeline view at:
 
 - shape scale `100%`;
 - zero manual place offsets;
@@ -41,14 +41,14 @@ invalidates the displayed result and requires a new check.
 
 ## Component API
 
-Audit the currently rendered System or Timeline projection synchronously:
+Audit the currently rendered spatial or timeline view synchronously:
 
 ```js
 const visualization = document.querySelector("systems-viz-next");
 const current = visualization.auditCurrentLayout();
 ```
 
-Audit all checkpoints in both projections at default layout:
+Audit all checkpoints in all authored views at default layout:
 
 ```js
 const report = await visualization.checkDefaultLayout();
@@ -62,7 +62,7 @@ Limit a check when investigating one state:
 
 ```js
 await visualization.checkDefaultLayout({
-  projections: ["system"],
+  projections: ["view-1"],
   checkpoints: "current",
 });
 ```

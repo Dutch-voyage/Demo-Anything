@@ -10,6 +10,9 @@ publish or persist the viewer.
 | --- | --- |
 | Understand what `sviz` does | [Project README](../README.md) |
 | Learn the IR and write a first trace | [IR authoring guide](ir-authoring-guide.md) |
+| Compile one view with a horizontal shard group | [`first_example.py`](../first_example.py) |
+| Copy and group elements into a compiler-arranged row | [`second_example.py`](../second_example.py) |
+| Extend a Python demo with relations and time | [Python DSL design](python-dsl-design.md) |
 | Convert real code into a reviewed demo | [Code-to-demo user manual](user-manual.md) |
 | Record evidence and gate reviews | [Example workbook template](example-workbook-template.md) |
 | Understand compiler and renderer boundaries | [IR design](ir-design.md) |
@@ -29,9 +32,9 @@ publish or persist the viewer.
    annotations, and a small view recipe.
 6. **Validate and compile.** Reject invalid references, lifecycle, timing,
    capacity, and provenance before visual styling.
-7. **Review both projections.** Inspect System for residency/topology and
-   Timeline for order/overlap; fix meaning in the IR and reusable layout
-   behavior in the compiler or renderer.
+7. **Review the authored views.** Check each spatial or timeline projection;
+   fix meaning in the IR and reusable layout behavior in the compiler or
+   renderer. Legacy examples name these views System and Timeline.
 8. **Test and publish.** Add semantic regression tests, export the portable
    component, and optionally attach a viewer-state persistence adapter.
 
@@ -47,7 +50,8 @@ checkable quality gates for a production-quality example.
 | DeepEP | [DeepEP mechanism](deepep-mechanism.md) | [DeepEP workflow](deepep-workflow.md) | [DeepEP guide](examples/deep-ep.md) |
 | MLA prefill and decode | [MLA mechanism](mla-mechanism.md) | [MLA workflow](mla-workflow.md) | [MLA prefill](examples/mla-prefill.md) · [MLA decode](examples/mla-decode.md) |
 
-All four traces are indexed in the [examples directory](../examples/README.md).
+The two generated progressive traces and four complete traces are indexed in the
+[examples directory](../examples/README.md).
 
 ## Contracts and maintenance
 

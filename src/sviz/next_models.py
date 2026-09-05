@@ -57,7 +57,14 @@ class DraftTime(DraftModel):
 class DraftPlace(Named):
     parent: Identifier | None = None
     role: Literal["group", "storage", "buffer", "executor", "register", "queue"] = "group"
-    layout: Literal["hierarchy", "memory", "grid", "queue", "network"] = "hierarchy"
+    layout: Literal[
+        "hierarchy",
+        "memory",
+        "grid",
+        "queue",
+        "network",
+        "horizontal",
+    ] = "hierarchy"
     capacity: DimensionMap = Field(default_factory=dict)
 
     @field_validator("capacity")
@@ -223,12 +230,40 @@ class DraftAnnotation(Named):
 
 
 class DraftViewRecipe(DraftModel):
+    """Legacy two-projection recipe accepted for existing YAML traces."""
+
     system_roots: list[Identifier]
     draggable: list[Identifier] = Field(default_factory=list)
     timeline_resources: list[Identifier]
     importance: list[Identifier] = Field(default_factory=list)
     show_source: bool = True
     show_compiled: bool = True
+
+
+class DraftView(Named):
+    """One authored view in the generic display collection."""
+
+    kind: Literal["spatial", "timeline"]
+    roots: list[Identifier] = Field(default_factory=list)
+    resources: list[Identifier] = Field(default_factory=list)
+    draggable: list[Identifier] = Field(default_factory=list)
+    importance: list[Identifier] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_shape(self) -> "DraftView":
+        if self.id in {"ir", "compiled"}:
+            raise ValueError("view IDs 'ir' and 'compiled' are reserved for inspectors")
+        if self.kind == "spatial":
+            if not self.roots:
+                raise ValueError("spatial views require at least one root plane")
+            if self.resources:
+                raise ValueError("resources are only valid on timeline views")
+        else:
+            if not self.resources:
+                raise ValueError("timeline views require at least one resource")
+            if self.roots or self.draggable:
+                raise ValueError("roots and draggable are only valid on spatial views")
+        return self
 
 
 class TraceDocument(DraftModel):
@@ -238,18 +273,19 @@ class TraceDocument(DraftModel):
     description: str | None = None
     time: DraftTime
     places: list[DraftPlace]
-    resources: list[DraftResource]
+    resources: list[DraftResource] = Field(default_factory=list)
     links: list[DraftLink] = Field(default_factory=list)
-    entities: list[DraftEntity]
+    entities: list[DraftEntity] = Field(default_factory=list)
     initial_materializations: list[DraftMaterialization] = Field(default_factory=list)
-    operations: list[DraftOperation]
-    stages: list[DraftStage]
+    operations: list[DraftOperation] = Field(default_factory=list)
+    stages: list[DraftStage] = Field(default_factory=list)
     flows: list[DraftFlow] = Field(default_factory=list)
     annotations: list[DraftAnnotation] = Field(default_factory=list)
     checkpoints: list[DraftCheckpoint]
-    view: DraftViewRecipe
+    views: list[DraftView] = Field(default_factory=list)
+    view: DraftViewRecipe | None = None
 
-    @field_validator("places", "entities", "operations", "stages", "checkpoints")
+    @field_validator("places", "checkpoints")
     @classmethod
     def collection_not_empty(cls, value: list[Any]) -> list[Any]:
         if not value:
@@ -262,3 +298,39 @@ class TraceDocument(DraftModel):
         if not ID_PATTERN.fullmatch(value):
             raise ValueError("must be a valid identifier")
         return value
+
+    @model_validator(mode="after")
+    def validate_view_contract(self) -> "TraceDocument":
+        if bool(self.views) == (self.view is not None):
+            raise ValueError("define exactly one of generic views or the legacy view recipe")
+        return self
+
+
+def resolved_views(trace: TraceDocument) -> list[DraftView]:
+    """Return canonical views, adapting legacy System/Timeline recipes on input."""
+
+    if trace.views:
+        return trace.views
+    assert trace.view is not None
+    legacy = trace.view
+    views = [
+        DraftView(
+            id="system",
+            label="System",
+            kind="spatial",
+            roots=legacy.system_roots,
+            draggable=legacy.draggable,
+            importance=legacy.importance,
+        )
+    ]
+    if legacy.timeline_resources:
+        views.append(
+            DraftView(
+                id="timeline",
+                label="Timeline",
+                kind="timeline",
+                resources=legacy.timeline_resources,
+                importance=legacy.importance,
+            )
+        )
+    return views

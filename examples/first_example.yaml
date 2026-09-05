@@ -1,0 +1,124 @@
+version: 0.2-draft
+id: first-example
+title: first example
+time:
+  mode: steps
+places:
+- id: plane-1
+  label: plane-1
+  attrs:
+    dsl_view: view-1
+    dsl_kind: plane
+  tags: {}
+  role: group
+  layout: grid
+  capacity: {}
+- id: group-1
+  label: group-1
+  attrs:
+    dsl_kind: group
+  tags: {}
+  parent: plane-1
+  role: group
+  layout: horizontal
+  capacity: {}
+- id: shard-0
+  label: shard-0
+  attrs:
+    dsl_kind: object
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: shard-1
+  label: shard-1
+  attrs:
+    dsl_kind: object
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: shard-2
+  label: shard-2
+  attrs:
+    dsl_kind: object
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: shard-3
+  label: shard-3
+  attrs:
+    dsl_kind: object
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: shard-4
+  label: shard-4
+  attrs:
+    dsl_kind: object
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: shard-5
+  label: shard-5
+  attrs:
+    dsl_kind: object
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: shard-6
+  label: shard-6
+  attrs:
+    dsl_kind: object
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: shard-7
+  label: shard-7
+  attrs:
+    dsl_kind: object
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+resources: []
+links: []
+entities: []
+initial_materializations: []
+operations: []
+stages: []
+flows: []
+annotations: []
+checkpoints:
+- id: checkpoint.initial
+  label: Initial state
+  attrs: {}
+  tags: {}
+  step: 1
+  narrative: Inspect the authored planes, elements, and semantic edges.
+  focus: []
+views:
+- id: view-1
+  label: view-1
+  attrs: {}
+  tags: {}
+  kind: spatial
+  roots:
+  - plane-1
+  resources: []
+  draggable:
+  - plane-1
+  importance: []

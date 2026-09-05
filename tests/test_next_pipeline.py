@@ -24,6 +24,10 @@ def _checkpoint(compiled: dict, checkpoint_id: str) -> dict:
     return next(item for item in compiled["execution"]["checkpoints"] if item["id"] == checkpoint_id)
 
 
+def _view(compiled: dict, identifier: str) -> dict:
+    return next(view for view in compiled["display"]["views"] if view["id"] == identifier)
+
+
 def test_flash_attention_validates_without_warnings() -> None:
     report = validate_trace(load_trace(EXAMPLE))
 
@@ -56,25 +60,27 @@ def test_compiler_builds_deterministic_execution_and_display_plans() -> None:
     assert first["base_revision"].startswith("sha256:")
     assert len(first["execution"]["events"]) == 20
     assert len(first["execution"]["checkpoints"]) == 16
-    assert first["display"]["system"]["roots"] == ["hbm", "smem", "compute"]
-    assert [lane["id"] for lane in first["display"]["timeline"]["lanes"]] == [
+    system = _view(first, "system")
+    timeline = _view(first, "timeline")
+    assert system["roots"] == ["hbm", "smem", "compute"]
+    assert [lane["id"] for lane in timeline["lanes"]] == [
         "copy_engine",
         "tensor_core",
         "softmax_pipe",
         "global_store",
         "lifecycle",
     ]
-    narrow_places = first["display"]["system"]["geometry"]["narrow"]["places"]
-    for root in first["display"]["system"]["roots"]:
+    narrow_places = system["geometry"]["narrow"]["places"]
+    for root in system["roots"]:
         box = narrow_places[root]
         assert box["x"] >= 24
         assert box["x"] + box["w"] <= 336
 
-    wide = first["display"]["system"]["geometry"]["wide"]
-    root_top = min(wide["places"][root]["y"] for root in first["display"]["system"]["roots"])
+    wide = system["geometry"]["wide"]
+    root_top = min(wide["places"][root]["y"] for root in system["roots"])
     root_bottom = max(
         wide["places"][root]["y"] + wide["places"][root]["h"]
-        for root in first["display"]["system"]["roots"]
+        for root in system["roots"]
     )
     assert root_top >= 76
     assert wide["canvas"]["height"] - root_bottom >= 76
@@ -279,12 +285,14 @@ def test_bundle_is_portable_and_self_contained(tmp_path: Path) -> None:
     assert "fetch(" in standalone  # component supports src, while this export uses inline data
 
 
-def test_only_vnext_examples_and_schema_are_kept() -> None:
+def test_only_maintained_examples_and_schema_are_kept() -> None:
     assert {path.name for path in (ROOT / "examples").glob("*.yaml")} == {
         "deepep_vnext.yaml",
         "flash_attention_vnext.yaml",
+        "first_example.yaml",
         "mla_decode_vnext.yaml",
         "mla_prefill_vnext.yaml",
+        "second_example.yaml",
     }
     assert {path.name for path in (ROOT / "schema").glob("*.json")} == {
         "sviz-0.2-draft.schema.json",

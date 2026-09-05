@@ -243,7 +243,9 @@ flows, lifecycle effects, dependencies, quantities, and resource definitions.
 
 ### Execution program
 
-Contains:
+Contains an ordered `views` collection. Each entry has stable authored
+identity and a rendering kind such as `spatial` or `timeline`, plus the
+kind-specific plan. It also contains:
 
 - ordered events;
 - materialization lifetimes and residency;
@@ -268,8 +270,9 @@ Contains:
 - inspector-only elements;
 - responsive policies for supported container profiles.
 
-System and timeline plans share semantic IDs, cursor positions, selection, and
-checkpoint definitions.
+All view plans share semantic IDs, cursor positions, selection, and checkpoint
+definitions. The renderer derives tabs from this collection; it does not
+invent a fixed pair of projections.
 
 ## 10. Renderer and interaction boundary
 
@@ -311,7 +314,8 @@ The standard workflow is:
 6. Validate identities, lifecycle, topology, timing, dependencies, and capacity.
 7. Compile events, deltas, snapshots, flow state, and resource ledgers.
 8. Review compiler-proposed checkpoints and add concise narrative where needed.
-9. Apply a view recipe and compile system and timeline plans.
+9. Apply authored view definitions and compile an ordered collection of view
+   plans.
 10. Preview every rendered mark with provenance back to its semantic concept and
     source facts.
 

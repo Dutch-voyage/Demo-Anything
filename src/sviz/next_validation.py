@@ -7,7 +7,7 @@ from typing import Iterable
 
 import networkx as nx
 
-from .next_models import DraftEffect, DraftStage, TraceDocument
+from .next_models import DraftEffect, DraftStage, TraceDocument, resolved_views
 from .validation import ValidationIssue, ValidationReport
 
 
@@ -214,6 +214,7 @@ def validate_draft_trace(trace: TraceDocument) -> ValidationReport:
 
     issues: list[ValidationIssue] = []
     named_collections: list[tuple[str, Iterable[object]]] = [
+        ("views", trace.views),
         ("places", trace.places),
         ("resources", trace.resources),
         ("links", trace.links),
@@ -314,6 +315,28 @@ def validate_draft_trace(trace: TraceDocument) -> ValidationReport:
         | flow_ids
         | all_materializations
     )
+    for index, stage in enumerate(trace.stages):
+        correspondence = stage.attrs.get("corresponds_to")
+        if correspondence is None:
+            continue
+        if not isinstance(correspondence, list) or not all(
+            isinstance(identifier, str) for identifier in correspondence
+        ):
+            _add(
+                issues,
+                "invalid-correspondence",
+                f"stages.{index}.attrs.corresponds_to",
+                "corresponds_to must be a list of semantic IDs",
+            )
+            continue
+        for identifier in correspondence:
+            _ref(
+                issues,
+                identifier,
+                all_semantic_ids,
+                f"stages.{index}.attrs.corresponds_to",
+                "correspondence target",
+            )
     for index, flow in enumerate(trace.flows):
         _ref(issues, flow.entity, entity_ids, f"flows.{index}.entity", "entity")
         for stage_id in flow.stages:
@@ -346,14 +369,16 @@ def validate_draft_trace(trace: TraceDocument) -> ValidationReport:
         _ref(issues, annotation.anchor, all_semantic_ids, f"annotations.{index}.anchor", "semantic anchor")
         _ref(issues, annotation.checkpoint, checkpoint_ids, f"annotations.{index}.checkpoint", "checkpoint")
 
-    for field_name, values, allowed in (
-        ("system_roots", trace.view.system_roots, place_ids),
-        ("draggable", trace.view.draggable, place_ids),
-        ("timeline_resources", trace.view.timeline_resources, resource_ids),
-        ("importance", trace.view.importance, all_semantic_ids),
-    ):
-        for value in values:
-            _ref(issues, value, allowed, f"view.{field_name}", field_name)
+    for index, view in enumerate(resolved_views(trace)):
+        prefix = f"views.{index}" if trace.views else "view"
+        for field_name, values, allowed in (
+            ("roots", view.roots, place_ids),
+            ("draggable", view.draggable, place_ids),
+            ("resources", view.resources, resource_ids),
+            ("importance", view.importance, all_semantic_ids),
+        ):
+            for value in values:
+                _ref(issues, value, allowed, f"{prefix}.{field_name}", field_name)
 
     dependency_graph = nx.DiGraph()
     dependency_graph.add_nodes_from(stage_ids)

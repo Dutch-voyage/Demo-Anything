@@ -1,6 +1,7 @@
 """Public API for the Systems Visualization semantic IR."""
 
 from .compiler import compile_trace
+from .dsl import AuthoringError, Demo
 from .exporter import export_trace
 from .loader import TraceLoadError, load_trace
 from .models import TraceDocument, ViewerState
@@ -14,6 +15,8 @@ from .validation import (
 __all__ = [
     "TraceDocument",
     "ViewerState",
+    "AuthoringError",
+    "Demo",
     "TraceLoadError",
     "TraceValidationError",
     "ValidationIssue",

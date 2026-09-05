@@ -4,15 +4,16 @@
       "additionalProperties": false,
       "properties": {
         "projection": {
-          "default": "system",
-          "enum": [
-            "ir",
-            "compiled",
-            "system",
-            "timeline"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
-          "title": "Projection",
-          "type": "string"
+          "default": null,
+          "title": "Projection"
         },
         "checkpoint": {
           "anyOf": [

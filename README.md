@@ -6,8 +6,10 @@ vNext pipeline.
 
 The IR describes places, resources, links, logical entities, physical
 materializations, operations, flows, stages, lifecycle effects, and authored
-checkpoints. A deterministic compiler derives the System and Timeline views;
-the renderer contains no workload-specific branches.
+checkpoints. A deterministic compiler derives an ordered collection of authored
+views; the renderer creates its tabs from that collection and contains no
+workload-specific branches. Existing YAML traces using the earlier
+`system_roots`/`timeline_resources` recipe are adapted at the compiler boundary.
 
 ## Quick start
 
@@ -28,12 +30,16 @@ compiled default needs help. Each checkpoint also has an editable Markdown
 narrative. Readers can attach pinned annotations to selected visual elements
 and switch each pin between unresolved and resolved without hiding it. Opening
 an annotation also exposes its title, body, and delete action. **Check layout**
-audits every System and Timeline checkpoint at the default scale using the
-browser's rendered bounds; see the
+audits every checkpoint in every authored spatial and timeline view at the
+default scale using the browser's rendered bounds; see the
 [`layout-checking guide`](docs/layout-checking.md).
 
 ## Examples
 
+- [`first_example.py`](first_example.py) authors one generic view containing a
+  compiler-positioned horizontal group of shards.
+- [`second_example.py`](second_example.py) copies one element into two new
+  identities, then groups all three into a compiler-arranged horizontal row.
 - [`flash_attention_vnext.yaml`](examples/flash_attention_vnext.yaml) models a
   complete FlashAttention-2 tile with copies, overlapping work, shared-memory
   occupancy, online-softmax state, and cleanup.
@@ -64,9 +70,16 @@ example:
 
 The short pipeline is: define the learning goal, collect evidence, model
 structure and execution, author checkpoints, validate, inspect compiled state,
-review System and Timeline, test, and export. Semantic facts belong in the IR;
+review each authored view, test, and export. Semantic facts belong in the IR;
 reusable display planning belongs in the compiler; reader-specific placement
 and content edits belong in viewer state.
+
+For small Python-authored experiments, begin with
+[`first_example.py`](first_example.py): one real view, one plane, and one
+compiler-arranged shard group. The [`Python DSL design`](docs/python-dsl-design.md)
+then introduces semantic edges, cross-plane equivalence, and corresponding
+timeline spans; [`python_dsl_minimal.py`](examples/python_dsl_minimal.py) is the
+richer executable example.
 
 ## Commands
 
@@ -106,6 +119,18 @@ trace = load_trace("examples/flash_attention_vnext.yaml")
 report = validate_trace(trace)
 report.raise_for_errors()
 compiled = compile_trace(trace)
+```
+
+Or construct a small demo directly:
+
+```python
+from sviz import Demo
+
+demo = Demo("hello")
+view = demo.view("main")
+plane = view.plane("objects")
+plane.element("hello.object", label="Hello")
+compiled = demo.compile()
 ```
 
 The checked-in [`schema/sviz-0.2-draft.schema.json`](schema/sviz-0.2-draft.schema.json)

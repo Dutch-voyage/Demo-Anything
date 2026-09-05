@@ -706,7 +706,8 @@
             "memory",
             "grid",
             "queue",
-            "network"
+            "network",
+            "horizontal"
           ],
           "title": "Layout",
           "type": "string"
@@ -1005,8 +1006,98 @@
       "title": "DraftTime",
       "type": "object"
     },
+    "DraftView": {
+      "additionalProperties": false,
+      "description": "One authored view in the generic display collection.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "attrs": {
+          "additionalProperties": true,
+          "title": "Attrs",
+          "type": "object"
+        },
+        "tags": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              }
+            ]
+          },
+          "title": "Tags",
+          "type": "object"
+        },
+        "kind": {
+          "enum": [
+            "spatial",
+            "timeline"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "roots": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Roots",
+          "type": "array"
+        },
+        "resources": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Resources",
+          "type": "array"
+        },
+        "draggable": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Draggable",
+          "type": "array"
+        },
+        "importance": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Importance",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "title": "DraftView",
+      "type": "object"
+    },
     "DraftViewRecipe": {
       "additionalProperties": false,
+      "description": "Legacy two-projection recipe accepted for existing YAML traces.",
       "properties": {
         "system_roots": {
           "items": {
@@ -1155,8 +1246,23 @@
       "title": "Checkpoints",
       "type": "array"
     },
+    "views": {
+      "items": {
+        "$ref": "#/$defs/DraftView"
+      },
+      "title": "Views",
+      "type": "array"
+    },
     "view": {
-      "$ref": "#/$defs/DraftViewRecipe"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DraftViewRecipe"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [
@@ -1165,12 +1271,7 @@
     "title",
     "time",
     "places",
-    "resources",
-    "entities",
-    "operations",
-    "stages",
-    "checkpoints",
-    "view"
+    "checkpoints"
   ],
   "title": "TraceDocument",
   "type": "object"

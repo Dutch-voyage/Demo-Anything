@@ -1,0 +1,87 @@
+version: 0.2-draft
+id: second-example
+title: copied elements in a horizontal group
+time:
+  mode: steps
+places:
+- id: plane-1
+  label: plane-1
+  attrs:
+    dsl_view: view-1
+    dsl_kind: plane
+  tags: {}
+  role: group
+  layout: grid
+  capacity: {}
+- id: group-1
+  label: group-1
+  attrs:
+    dsl_kind: group
+  tags: {}
+  parent: plane-1
+  role: group
+  layout: horizontal
+  capacity: {}
+- id: element-1
+  label: request
+  attrs:
+    state: ready
+    slots: 1
+    dsl_kind: request
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: element-2
+  label: request
+  attrs:
+    state: ready
+    slots: 1
+    dsl_kind: request
+    dsl_copied_from: element-1
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+- id: element-3
+  label: request
+  attrs:
+    state: ready
+    slots: 1
+    dsl_kind: request
+    dsl_copied_from: element-1
+  tags: {}
+  parent: group-1
+  role: group
+  layout: hierarchy
+  capacity: {}
+resources: []
+links: []
+entities: []
+initial_materializations: []
+operations: []
+stages: []
+flows: []
+annotations: []
+checkpoints:
+- id: checkpoint.initial
+  label: Initial state
+  attrs: {}
+  tags: {}
+  step: 1
+  narrative: Inspect the authored planes, elements, and semantic edges.
+  focus: []
+views:
+- id: view-1
+  label: view-1
+  attrs: {}
+  tags: {}
+  kind: spatial
+  roots:
+  - plane-1
+  resources: []
+  draggable:
+  - plane-1
+  importance: []

@@ -185,13 +185,17 @@ checkpoints:
     narrative: The destination copy now exists and retains source provenance.
     focus: [block.source, block.destination]
 
-view:
-  system_roots: [source, destination]
-  draggable: [source, destination]
-  timeline_resources: [copy_slot]
-  importance: [block, block_copy]
-  show_source: true
-  show_compiled: true
+views:
+  - id: structure
+    label: System
+    kind: spatial
+    roots: [source, destination]
+    draggable: [source, destination]
+    importance: [block, block_copy]
+  - id: execution
+    label: Timeline
+    kind: timeline
+    resources: [copy_slot]
 ```
 
 What the compiler derives:
@@ -226,10 +230,14 @@ numerically. The compiler does not invent missing time.
 
 Define semantic containment, not screen boxes. Valid roles are `group`,
 `storage`, `buffer`, `executor`, `register`, and `queue`. Layout hints are
-`hierarchy`, `memory`, `grid`, `queue`, and `network`.
+`hierarchy`, `memory`, `grid`, `queue`, `network`, and `horizontal`.
 
-Use `parent` only for real containment. Put only meaningful roots in
-`view.system_roots`; the renderer can still show their descendants.
+Use `horizontal` on a semantic group whose direct children must form an
+ordered row. The list order of the child places is stable authoring intent;
+coordinates and spacing remain compiler output.
+
+Use `parent` only for real containment. Put only meaningful roots in a spatial
+view's `roots`; the renderer can still show their descendants.
 
 ### 5.3 Resources and links
 
@@ -288,15 +296,21 @@ that are visible in at least one projection.
 `anchor`, optional checkpoint, title, body, and `resolved` or `unresolved`
 status. It is not execution state.
 
-### 5.7 View recipe
+### 5.7 Authored views
 
-The recipe supplies modest presentation intent:
+Each entry in `views` has a stable `id`, reader-facing `label`, and `kind`.
+The initial kinds are `spatial` and `timeline`:
 
-- `system_roots`: top-level containers to render;
-- `draggable`: places readers may reposition;
-- `timeline_resources`: ordered lane IDs;
+- `roots`: top-level containers for a spatial view;
+- `draggable`: places readers may reposition in that spatial view;
+- `resources`: ordered lane IDs for a timeline view;
 - `importance`: semantic IDs to emphasize;
-- `show_source` and `show_compiled`: expose debugging projections.
+
+The compiler preserves the authored view ID and label in `display.views`. The
+renderer generates its tabs from that ordered collection. Existing repository
+traces using the singular `view` recipe with `system_roots` and
+`timeline_resources` remain supported through a legacy-input adapter, but new
+documents should use `views`.
 
 Do not encode coordinates or execution meaning here. Reader-adjusted positions,
 sizes, edge routes, narrative edits, and annotation edits belong to the
@@ -318,11 +332,11 @@ Review in this order:
 1. **Validation:** resolve schema, reference, timing, lifecycle, dependency,
    flow, provenance, and capacity errors.
 2. **Compiled JSON:** inspect initial/final materializations, checkpoint
-   snapshots, active stages, flows, resource ledgers, System roots, and
-   Timeline lanes.
-3. **System view:** verify containment, residency, topology, flow routes,
+   snapshots, active stages, flows, resource ledgers, spatial roots, and
+   timeline lanes.
+3. **Spatial views:** verify containment, residency, topology, flow routes,
    capacity, and selection.
-4. **Timeline view:** verify order, overlap, wait/sync work, labels, and lane
+4. **Timeline views:** verify order, overlap, wait/sync work, labels, and lane
    ownership.
 5. **Narrative:** verify every step directs the reader to visible evidence.
 6. **Responsive and interaction QA:** check narrow/wide containers, dragging,

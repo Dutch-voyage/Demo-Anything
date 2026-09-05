@@ -14,6 +14,7 @@ from .next_models import (
     DraftResource as Resource,
     DraftStage as Stage,
     DraftTime as TimeConfig,
+    DraftView as View,
     DraftViewRecipe as ViewRecipe,
     TraceDocument,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "Stage",
     "TimeConfig",
     "TraceDocument",
+    "View",
     "ViewRecipe",
     "SavedViewerView",
     "ViewerAnnotation",

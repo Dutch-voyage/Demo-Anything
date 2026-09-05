@@ -1,5 +1,58 @@
 # Design decision log
 
+## 2026-09-03 — Treat element copy as inheritance, not identity equivalence
+
+**Status:** Implemented
+
+### Decision
+
+Let `Element.copy()` create a new stable identity that inherits the source
+label, kind, and a deep copy of its attributes. Permit explicit property
+overrides and an explicit destination plane. Record direct copy provenance in
+normalized attributes, but do not copy containment or edges and do not create
+an equivalence relation automatically.
+
+Reusing an element definition should be concise without aliasing mutable state.
+A copied definition may represent another request, worker, or buffer rather
+than a second projection of the same subject, so treating copy as equivalence
+would give coordinated interaction the wrong semantics. Authors explicitly
+group, connect, or equate the returned handle when those relationships apply.
+
+## 2026-09-03 — Model a horizontal group as containment plus layout intent
+
+**Status:** Implemented
+
+### Decision
+
+Let `Plane.group()` collect existing element handles in authored order. Lower
+the group to a nested semantic place with `layout: horizontal`, and reparent
+its members without changing their IDs. The compiler recursively lays out the
+containment tree and guarantees equal row position with increasing horizontal
+position in both responsive profiles; authors provide no coordinates.
+
+Require at least two unique members from the same plane, and allow an element
+to belong to only one direct group in this first slice. Defer nested, vertical,
+grid, wrapping, and overlapping groups until their containment and responsive
+semantics are explicit.
+
+## 2026-09-03 — Preserve authored view identity through compilation
+
+**Status:** Implemented
+
+### Decision
+
+Make an ordered `views` collection the canonical source and compiled display
+contract. Each view keeps its authored ID, label, and rendering kind. Spatial
+views select root planes; timeline views select lane resources. The renderer
+derives tabs from `display.views` and dispatches on view kind, so a one-view
+demo renders exactly one named view instead of synthetic System and Timeline
+tabs.
+
+Keep the singular `view` recipe temporarily as an explicit input adapter for
+the four existing YAML demonstrations. It normalizes their `system_roots` and
+`timeline_resources` into authored views named System and Timeline. New Python
+DSL output writes `views` directly and never uses that compatibility recipe.
+
 ## 2026-08-25 — Audit default layouts using rendered browser geometry
 
 **Status:** Implemented

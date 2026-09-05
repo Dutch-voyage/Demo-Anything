@@ -61,8 +61,15 @@ class ViewerLayout(ViewerStateModel):
 
 
 class SavedViewerView(ViewerStateModel):
-    projection: Literal["ir", "compiled", "system", "timeline"] = "system"
+    projection: Identifier | None = None
     checkpoint: Identifier | None = None
+
+    @field_validator("projection")
+    @classmethod
+    def validate_projection(cls, value: str | None) -> str | None:
+        if value is not None and not ID_PATTERN.fullmatch(value):
+            raise ValueError("must be a valid view identifier")
+        return value
 
 
 class ViewerState(ViewerStateModel):
@@ -106,7 +113,11 @@ class ViewerState(ViewerStateModel):
 def empty_viewer_state(compiled: dict[str, object]) -> ViewerState:
     """Create an empty persisted overlay for one compiled visualization."""
 
+    display = compiled.get("display")
+    views = display.get("views", []) if isinstance(display, dict) else []
+    first_view = views[0].get("id", "system") if views and isinstance(views[0], dict) else "system"
     return ViewerState(
         visualization_id=str(compiled["visualization_id"]),
         base_revision=str(compiled["base_revision"]),
+        saved_view=SavedViewerView(projection=str(first_view)),
     )

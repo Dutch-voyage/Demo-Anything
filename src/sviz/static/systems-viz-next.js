@@ -99,8 +99,8 @@ const NEXT_STYLES = String.raw`
   .stage { width: 100%; min-width: 0; min-height: 0; overflow: auto; background: var(--sv-panel); }
   .panel[hidden] { display: none; }
   .canvas { width: 100%; height: 100%; min-height: 430px; }
-  .system-panel { width: 100%; height: 100%; min-height: 430px; display: grid; grid-template-rows: auto minmax(0, 1fr); }
-  .system-toolbar {
+  .spatial-panel { width: 100%; height: 100%; min-height: 430px; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+  .spatial-toolbar {
     min-width: 0;
     min-height: 42px;
     display: flex;
@@ -127,8 +127,8 @@ const NEXT_STYLES = String.raw`
   .tool-value { min-width: 42px; text-align: center; color: var(--sv-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   .tool-help { min-width: 0; margin-left: 6px; overflow: hidden; color: var(--sv-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
   .tool-reset { margin-left: auto; }
-  .system-surface, .timeline-surface { position: relative; min-width: 0; min-height: 0; }
-  .system-surface { height: 100%; }
+  .spatial-surface, .timeline-surface { position: relative; min-width: 0; min-height: 0; }
+  .spatial-surface { height: 100%; }
   .timeline-surface { width: 100%; height: 100%; }
   .pin-layer { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; }
   .annotation-pin {
@@ -270,8 +270,8 @@ const NEXT_STYLES = String.raw`
     .workspace { display: block; overflow: auto; }
     .stage { min-height: 560px; overflow: visible; }
     .canvas, .code { min-height: 560px; }
-    .system-panel { min-height: 560px; }
-    .system-toolbar { flex-wrap: wrap; }
+    .spatial-panel { min-height: 560px; }
+    .spatial-toolbar { flex-wrap: wrap; }
     .tool-help { order: 3; width: 100%; margin: 0 2px; }
     .foot { align-items: flex-start; }
     .checkpoint-title, .checkpoint-detail { white-space: normal; }
@@ -472,7 +472,7 @@ function routeConnection(fromBox, toBox, obstacles, canvas, routeIndex, profileN
   }
 
   const exposedLength = horizontal ? Math.abs(end.x - start.x) : Math.abs(end.y - start.y);
-  const labelLength = Math.min(160, Math.max(54, String(label || "").length * 6 + 16));
+  const labelLength = label ? Math.min(160, Math.max(54, String(label).length * 6 + 16)) : 0;
   if (!blocked && exposedLength >= labelLength) {
     if (horizontal) {
       const middle = (start.x + end.x) / 2;
@@ -546,7 +546,7 @@ class SystemsVizNext extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this.data = null;
-    this.view = this.getAttribute("initial-view") || "system";
+    this.view = this.getAttribute("initial-view") || "";
     this.cursorIndex = 0;
     this.selection = null;
     this.placeOffsets = {};
@@ -648,11 +648,13 @@ class SystemsVizNext extends HTMLElement {
       this.layoutCheckState = "idle";
       this.layoutCheckReport = null;
       this.layoutCheckPromise = null;
-      for (const id of this.data.display.system.draggable || []) {
-        this.placeOffsets[id] = { x: 0, y: 0 };
-        this.placeScales[id] = 1;
+      for (const view of this.spatialViews) {
+        for (const id of view.draggable || []) {
+          this.placeOffsets[id] = { x: 0, y: 0 };
+          this.placeScales[id] = 1;
+        }
+        for (const route of view.routes || []) this.edgeOffsets[route.id] = { x: 0, y: 0 };
       }
-      for (const route of this.data.display.system.routes || []) this.edgeOffsets[route.id] = { x: 0, y: 0 };
       this.renderShell();
       this.resizeObserver.observe(this);
       if (this.getAttribute("state-src")) await this.loadViewerState();
@@ -664,6 +666,10 @@ class SystemsVizNext extends HTMLElement {
   get checkpoints() { return this.data?.execution?.checkpoints || []; }
   get checkpoint() { return this.checkpoints[this.cursorIndex]; }
   get visualizationId() { return this.getAttribute("visualization-id") || this.data?.visualization_id || ""; }
+  get displayViews() { return this.data?.display?.views || []; }
+  get spatialViews() { return this.displayViews.filter(view => view.kind === "spatial"); }
+  get timelineViews() { return this.displayViews.filter(view => view.kind === "timeline"); }
+  get activeViewPlan() { return this.displayViews.find(view => view.id === this.view) || null; }
 
   persistenceStatusLabel() {
     if (this.stateStatusMessage) return this.stateStatusMessage;
@@ -836,7 +842,7 @@ class SystemsVizNext extends HTMLElement {
         : { x: 0, y: 0 };
     }
     const savedView = state.saved_view || {};
-    const allowedViews = ["ir", "compiled", "system", "timeline"];
+    const allowedViews = ["ir", "compiled", ...this.displayViews.map(view => view.id)];
     if (allowedViews.includes(savedView.projection)) this.view = savedView.projection;
     const checkpointIndex = this.checkpoints.findIndex(checkpoint => checkpoint.id === savedView.checkpoint);
     if (checkpointIndex >= 0) this.cursorIndex = checkpointIndex;
@@ -929,14 +935,13 @@ class SystemsVizNext extends HTMLElement {
   }
 
   renderShell() {
-    const sourceView = this.data.source.view || {};
+    const inspectors = this.data.display.inspectors || {};
     const tabs = [
-      ...(sourceView.show_source ? [{ id: "ir", label: "IR" }] : []),
-      ...(sourceView.show_compiled ? [{ id: "compiled", label: "Compiled" }] : []),
-      { id: "system", label: "System" },
-      { id: "timeline", label: "Timeline" },
+      ...(inspectors.source ? [{ id: "ir", label: "IR", kind: "inspector" }] : []),
+      ...(inspectors.compiled ? [{ id: "compiled", label: "Compiled", kind: "inspector" }] : []),
+      ...this.displayViews,
     ];
-    if (!tabs.some(tab => tab.id === this.view)) this.view = "system";
+    if (!tabs.some(tab => tab.id === this.view)) this.view = this.displayViews[0]?.id || tabs[0]?.id || "";
     this.shadowRoot.innerHTML = `
       <style>${NEXT_STYLES}</style>
       <div class="root">
@@ -956,15 +961,15 @@ class SystemsVizNext extends HTMLElement {
               <button type="button" class="content-action" data-reload-state ${["conflict", "error"].includes(this.stateStatus) ? "" : "hidden"}>Reload state</button>
             </div>` : ""}
             <div class="tabs" role="tablist" aria-label="Visualization views">
-              ${tabs.map(tab => `<button type="button" class="tab" role="tab" data-view="${tab.id}" aria-selected="${tab.id === this.view}">${tab.label}</button>`).join("")}
+              ${tabs.map(tab => `<button type="button" class="tab" role="tab" data-view="${escapeText(tab.id)}" aria-selected="${tab.id === this.view}">${escapeText(tab.label)}</button>`).join("")}
             </div>
           </div>
         </header>
         <div class="workspace">
           <main class="stage">
             ${tabs.map(tab => tab.id === "ir" || tab.id === "compiled"
-              ? `<pre class="panel code" data-panel="${tab.id}" ${tab.id === this.view ? "" : "hidden"}></pre>`
-              : `<section class="panel canvas" data-panel="${tab.id}" ${tab.id === this.view ? "" : "hidden"}></section>`).join("")}
+              ? `<pre class="panel code" data-panel="${escapeText(tab.id)}" ${tab.id === this.view ? "" : "hidden"}></pre>`
+              : `<section class="panel canvas" data-panel="${escapeText(tab.id)}" ${tab.id === this.view ? "" : "hidden"}></section>`).join("")}
           </main>
           <aside class="narrative-panel" aria-label="Checkpoint narrative and annotations" data-content-panel></aside>
         </div>
@@ -1188,7 +1193,9 @@ class SystemsVizNext extends HTMLElement {
       const target = surface.querySelector(`[data-anchor-target="${CSS.escape(materialization.id)}"]`);
       if (target) return target;
     }
-    const stage = this.data.display.timeline.marks.find(mark => mark.operation === annotation.anchor || mark.flow === annotation.anchor);
+    const stage = this.timelineViews
+      .flatMap(view => view.marks || [])
+      .find(mark => mark.operation === annotation.anchor || mark.flow === annotation.anchor);
     return stage ? surface.querySelector(`[data-anchor-target="${CSS.escape(stage.id)}"]`) : null;
   }
 
@@ -1196,10 +1203,12 @@ class SystemsVizNext extends HTMLElement {
     if (this.pinFrame !== null) cancelAnimationFrame(this.pinFrame);
     this.pinFrame = requestAnimationFrame(() => {
       this.pinFrame = null;
-      const surface = this.view === "system"
-        ? this.shadowRoot.querySelector('[data-panel="system"] .system-surface')
-        : this.view === "timeline"
-          ? this.shadowRoot.querySelector('[data-panel="timeline"] .timeline-surface')
+      const plan = this.activeViewPlan;
+      const panel = this.shadowRoot.querySelector(`[data-panel="${CSS.escape(this.view)}"]`);
+      const surface = plan?.kind === "spatial"
+        ? panel?.querySelector(".spatial-surface")
+        : plan?.kind === "timeline"
+          ? panel?.querySelector(".timeline-surface")
           : null;
       const layer = surface?.querySelector(".pin-layer");
       if (!surface || !layer) return;
@@ -1300,7 +1309,7 @@ class SystemsVizNext extends HTMLElement {
   }
 
   beginDrag(event) {
-    if (this.view !== "system") return;
+    if (this.activeViewPlan?.kind !== "spatial") return;
     if (event.target.closest?.("[data-resize-place]")) return;
     const handle = event.target.closest?.("[data-drag-place]");
     if (!handle) return;
@@ -1348,7 +1357,7 @@ class SystemsVizNext extends HTMLElement {
   }
 
   beginResize(event) {
-    if (this.view !== "system") return;
+    if (this.activeViewPlan?.kind !== "spatial") return;
     const handle = event.target.closest?.("[data-resize-place]");
     if (!handle) return;
     const id = handle.dataset.resizePlace;
@@ -1389,7 +1398,7 @@ class SystemsVizNext extends HTMLElement {
   }
 
   beginEdgeDrag(event) {
-    if (this.view !== "system" || !this.edgeEditMode) return;
+    if (this.activeViewPlan?.kind !== "spatial" || !this.edgeEditMode) return;
     const handle = event.target.closest?.("[data-drag-edge]");
     if (!handle) return;
     const id = handle.dataset.dragEdge;
@@ -1444,10 +1453,10 @@ class SystemsVizNext extends HTMLElement {
   }
 
   auditCurrentLayout() {
-    if (!this.data || !["system", "timeline"].includes(this.view)) {
-      throw new Error("Layout audits require the System or Timeline projection");
+    if (!this.data || !["spatial", "timeline"].includes(this.activeViewPlan?.kind)) {
+      throw new Error("Layout audits require a rendered spatial or timeline view");
     }
-    const panel = this.shadowRoot.querySelector(`[data-panel="${this.view}"]`);
+    const panel = this.shadowRoot.querySelector(`[data-panel="${CSS.escape(this.view)}"]`);
     const svg = panel?.querySelector("svg");
     if (!svg) throw new Error(`The ${this.view} projection is not rendered`);
 
@@ -1592,8 +1601,9 @@ class SystemsVizNext extends HTMLElement {
         edgeOffsets: structuredClone(this.edgeOffsets),
         edgeEditMode: this.edgeEditMode,
       };
-      const projections = (options.projections || ["system", "timeline"])
-        .filter(projection => ["system", "timeline"].includes(projection));
+      const viewIds = new Set(this.displayViews.map(view => view.id));
+      const projections = (options.projections || this.displayViews.map(view => view.id))
+        .filter(projection => viewIds.has(projection));
       const checkpointIndexes = options.checkpoints === "current"
         ? [this.cursorIndex]
         : this.checkpoints.map((_, index) => index);
@@ -1682,7 +1692,7 @@ class SystemsVizNext extends HTMLElement {
   }
 
   renderActivePanel() {
-    if (!this.data || !this.shadowRoot.querySelector(`[data-panel="${this.view}"]`)) return;
+    if (!this.data || !this.shadowRoot.querySelector(`[data-panel="${CSS.escape(this.view)}"]`)) return;
     if (this.view === "ir") {
       this.shadowRoot.querySelector('[data-panel="ir"]').textContent = JSON.stringify(this.data.source, null, 2);
     } else if (this.view === "compiled") {
@@ -1695,12 +1705,12 @@ class SystemsVizNext extends HTMLElement {
           manual_edge_offsets: this.edgeOffsets,
           shape_scale: this.shapeScale,
         },
-        system_plan: this.data.display.system,
-        timeline_plan: this.data.display.timeline,
+        view_plans: this.displayViews,
       }, null, 2);
-    } else if (this.view === "system") {
-      this.shadowRoot.querySelector('[data-panel="system"]').innerHTML = `<div class="system-panel">
-        <div class="system-toolbar" role="toolbar" aria-label="System view layout controls">
+    } else if (this.activeViewPlan?.kind === "spatial") {
+      const plan = this.activeViewPlan;
+      this.shadowRoot.querySelector(`[data-panel="${CSS.escape(this.view)}"]`).innerHTML = `<div class="spatial-panel">
+        <div class="spatial-toolbar" role="toolbar" aria-label="Spatial view layout controls">
           <span class="tool-label">Shape size</span>
           <button type="button" class="tool-button" data-scale-down aria-label="Make shapes smaller" ${this.shapeScale <= .7 ? "disabled" : ""}>−</button>
           <output class="tool-value" aria-label="Current shape size">${Math.round(this.shapeScale * 100)}%</output>
@@ -1709,11 +1719,12 @@ class SystemsVizNext extends HTMLElement {
           <span class="tool-help">${this.edgeEditMode ? "Drag edge handles · arrow keys adjust precisely" : "Drag headers to move · drag corners to resize"}</span>
           <button type="button" class="tool-button tool-reset" data-reset-layout>Reset layout</button>
         </div>
-        <div class="system-surface">${this.systemSvg()}<div class="pin-layer" aria-label="Pinned annotations"></div></div>
+        <div class="spatial-surface">${this.spatialSvg(plan)}<div class="pin-layer" aria-label="Pinned annotations"></div></div>
       </div>`;
       this.bindPanelInteractions();
-    } else if (this.view === "timeline") {
-      this.shadowRoot.querySelector('[data-panel="timeline"]').innerHTML = `<div class="timeline-surface">${this.timelineSvg()}<div class="pin-layer" aria-label="Pinned annotations"></div></div>`;
+    } else if (this.activeViewPlan?.kind === "timeline") {
+      const plan = this.activeViewPlan;
+      this.shadowRoot.querySelector(`[data-panel="${CSS.escape(this.view)}"]`).innerHTML = `<div class="timeline-surface">${this.timelineSvg(plan)}<div class="pin-layer" aria-label="Pinned annotations"></div></div>`;
       this.bindPanelInteractions();
     }
     this.scheduleAnnotationPins();
@@ -1761,14 +1772,43 @@ class SystemsVizNext extends HTMLElement {
     return id;
   }
 
-  profileGeometry() {
+  relatedSelection() {
+    const related = new Set(this.selection ? [this.selection] : []);
+    if (!related.size) return related;
+    const routes = this.spatialViews.flatMap(view => view.routes || []);
+    const marks = this.timelineViews.flatMap(view => view.marks || []);
+    let changed = true;
+    while (changed) {
+      const before = related.size;
+      for (const route of routes) {
+        const endpoints = [route.from, route.to];
+        const selectedRoute = related.has(route.id);
+        const selectedEndpoint = endpoints.some(id => related.has(id));
+        if (selectedRoute || (route.semantic_role === "equivalence" && selectedEndpoint)) {
+          related.add(route.id);
+          endpoints.forEach(id => related.add(id));
+        }
+      }
+      for (const mark of marks) {
+        const correspondence = [mark.id, ...(mark.corresponds_to || [])];
+        if (correspondence.some(id => related.has(id))) {
+          correspondence.forEach(id => related.add(id));
+        }
+      }
+      changed = related.size !== before;
+    }
+    return related;
+  }
+
+  profileGeometry(plan = this.activeViewPlan) {
+    if (!plan || plan.kind !== "spatial") throw new Error("A spatial view is required");
     const profileName = this.clientWidth < 620 ? "narrow" : "wide";
-    const profile = this.data.display.system.geometry[profileName];
+    const profile = plan.geometry[profileName];
     const sourcePlaces = Object.fromEntries(Object.entries(profile.places).map(([id, box]) => [id, { ...box }]));
     const places = Object.fromEntries(Object.entries(sourcePlaces).map(([id, box]) => [id, { ...box }]));
-    const children = this.data.display.system.children;
+    const children = plan.children;
     const canvas = { ...profile.canvas };
-    for (const root of this.data.display.system.draggable) {
+    for (const root of plan.draggable) {
       const base = sourcePlaces[root];
       if (!base) continue;
       const requestedX = this.placeOffsets[root]?.x || 0;
@@ -1801,13 +1841,15 @@ class SystemsVizNext extends HTMLElement {
     return { name: profileName, canvas, places };
   }
 
-  systemSvg() {
-    const plan = this.data.display.system;
-    const geometry = this.profileGeometry();
+  spatialSvg(plan = this.activeViewPlan) {
+    const geometry = this.profileGeometry(plan);
     const places = geometry.places;
     const activeIds = new Set(this.checkpoint.active_stages);
-    const activeStages = this.data.display.timeline.marks.filter(mark => activeIds.has(mark.id));
+    const activeStages = this.timelineViews
+      .flatMap(view => view.marks || [])
+      .filter(mark => activeIds.has(mark.id));
     const selected = this.selection;
+    const related = this.relatedSelection();
     const materialsByPlace = {};
     for (const item of this.checkpoint.materializations) (materialsByPlace[item.place] ||= []).push(item);
     const ledgersByOwner = {};
@@ -1826,27 +1868,30 @@ class SystemsVizNext extends HTMLElement {
       const from = places[route.from];
       const to = places[route.to];
       if (!from || !to) return "";
-      const obstacles = rootBoxes.filter(box => box.id !== route.from && box.id !== route.to);
+      const obstacles = rootBoxes.filter(box => box.id !== route.from_root && box.id !== route.to_root);
       const transferGroup = activeTransferGroups[route.id] || [];
       const displayLabel = transferGroup.length === 1
         ? transferGroup[0].label
         : transferGroup.length > 1
           ? `${route.label} · ${transferGroup.length} transfers`
           : route.label;
-      const routed = routeConnection(from, to, obstacles, geometry.canvas, routeIndex, geometry.name, displayLabel, this.edgeOffsets[route.id]);
+      const showInlineLabel = route.from_root !== route.to_root;
+      const routed = routeConnection(from, to, obstacles, geometry.canvas, routeIndex, geometry.name, showInlineLabel ? displayLabel : "", this.edgeOffsets[route.id]);
       routePaths[route.id] = routed;
       const active = transferGroup.length > 0;
       const isSelected = selected === route.id;
-      const color = isSelected ? "var(--sv-selection)" : active ? "var(--sv-transfer)" : "var(--sv-muted)";
+      const isRelated = related.has(route.id);
+      const isEquivalence = route.semantic_role === "equivalence";
+      const color = isSelected || isRelated ? "var(--sv-selection)" : active ? "var(--sv-transfer)" : "var(--sv-muted)";
       const label = displayLabel.length > 32 ? `${displayLabel.slice(0, 31)}…` : displayLabel;
       const transform = routed.verticalLabel ? ` transform="rotate(-90 ${routed.label.x} ${routed.label.y})"` : "";
-      return `<g data-edge-route="${escapeText(route.id)}" data-anchor-target="${escapeText(route.id)}" data-routing="${routed.external ? "external" : "direct"}">
+      return `<g data-edge-route="${escapeText(route.id)}" data-anchor-target="${escapeText(route.id)}" data-routing="${routed.external ? "external" : "direct"}" data-semantic-role="${escapeText(route.semantic_role || "edge")}">
         <title>${escapeText(displayLabel)}${active ? ` · ${escapeText(route.label)}` : ""}</title>
         <path data-edge-hit data-select="${escapeText(route.id)}" d="${routed.path}" fill="none" stroke="transparent" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
         <path data-edge-halo data-select="${escapeText(route.id)}" d="${routed.path}" fill="none" stroke="var(--sv-panel)" stroke-width="${active ? 8 : 6}" stroke-linecap="round" stroke-linejoin="round"/>
-        <path data-select="${escapeText(route.id)}" id="route-${escapeText(route.id)}" d="${routed.path}" fill="none" stroke="${color}" stroke-width="${isSelected ? 4 : active ? 3 : 1.75}" stroke-linecap="round" stroke-linejoin="round" ${route.directed ? `marker-end="url(#${isSelected ? "arrow-selected" : active ? "arrow-active" : "arrow"})"` : ""}/>
+        <path data-select="${escapeText(route.id)}" id="route-${escapeText(route.id)}" d="${routed.path}" fill="none" stroke="${color}" stroke-width="${isSelected ? 4 : isRelated ? 3 : active ? 3 : isEquivalence ? 2.25 : 1.75}" stroke-dasharray="${isEquivalence ? "7 5" : "none"}" stroke-linecap="round" stroke-linejoin="round" ${route.directed ? `marker-end="url(#${isSelected || isRelated ? "arrow-selected" : active ? "arrow-active" : "arrow"})"` : ""}/>
         <circle data-select="${escapeText(route.id)}" cx="${routed.label.x}" cy="${routed.label.y - 4}" r="14" fill="transparent" tabindex="0" role="button" aria-label="Select link ${escapeText(route.label)}"/>
-        <text class="edge-label" data-select="${escapeText(route.id)}" data-edge-label="${escapeText(route.id)}" data-layout-label="edge" data-layout-owner="${escapeText(route.id)}" x="${routed.label.x}" y="${routed.label.y}" text-anchor="middle" font-size="10" font-weight="${active ? 650 : 500}" fill="${color}"${transform}>${escapeText(label)}</text>
+        ${showInlineLabel ? `<text class="edge-label" data-select="${escapeText(route.id)}" data-edge-label="${escapeText(route.id)}" data-layout-label="edge" data-layout-owner="${escapeText(route.id)}" x="${routed.label.x}" y="${routed.label.y}" text-anchor="middle" font-size="10" font-weight="${active ? 650 : 500}" fill="${color}"${transform}>${escapeText(label)}</text>` : ""}
       </g>`;
     }).join("");
 
@@ -1868,14 +1913,15 @@ class SystemsVizNext extends HTMLElement {
       const isRoot = plan.roots.includes(place.id);
       const active = activeStages.some(stage => stage.at === place.id);
       const rootSelected = selected === place.id;
-      const stroke = rootSelected ? "var(--sv-selection)" : active ? "var(--sv-compute)" : "var(--sv-border)";
+      const relatedSelected = related.has(place.id);
+      const stroke = rootSelected || relatedSelected ? "var(--sv-selection)" : active ? "var(--sv-compute)" : "var(--sv-border)";
       const fill = active ? "color-mix(in srgb, var(--sv-compute) 10%, var(--sv-panel))" : isRoot ? "var(--sv-panel)" : "var(--sv-panel-soft)";
       const drag = isRoot && plan.draggable.includes(place.id);
       const fontSize = clampValue((isRoot ? 13 : 11) * this.shapeScale, 9, 17);
       const labelOffset = (isRoot ? 14 : 9) * this.shapeScale;
       const fitted = fitTimelineLabel(place.label, box.w - labelOffset - 8, fontSize);
       return `<g data-select="${escapeText(place.id)}" data-anchor-target="${escapeText(place.id)}" data-label-fit="${fitted.fit}" data-layout-item="place" data-layout-id="${escapeText(place.id)}" data-layout-parent="${escapeText(place.parent || "")}" tabindex="0" role="button" aria-label="${drag ? `Select or move ${escapeText(place.label)}. Use arrow keys for precise movement.` : `Select ${escapeText(place.label)}.`}" ${drag ? `data-drag-place="${escapeText(place.id)}" data-dragging="${this.dragState?.id === place.id}"` : ""}>
-        <rect data-layout-box x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="${isRoot ? 9 : 6}" fill="${fill}" stroke="${stroke}" stroke-width="${rootSelected || active ? 2 : 1}"/>
+        <rect data-layout-box x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="${isRoot ? 9 : 6}" fill="${fill}" stroke="${stroke}" stroke-width="${rootSelected ? 3 : relatedSelected || active ? 2 : 1}"/>
         ${isRoot ? `<rect x="${box.x}" y="${box.y}" width="4" height="${box.h}" rx="2" fill="${place.role === "storage" ? "var(--sv-primary)" : place.role === "buffer" ? "var(--sv-compute)" : "var(--sv-selection)"}"/>` : ""}
         ${fitted.text ? `<text data-layout-label="place" data-layout-owner="${escapeText(place.id)}" x="${box.x + labelOffset}" y="${box.y + (isRoot ? 24 : 18) * this.shapeScale}" font-size="${fontSize}" font-weight="650">${escapeText(fitted.text)}</text>` : ""}
       </g>`;
@@ -1988,7 +2034,7 @@ class SystemsVizNext extends HTMLElement {
       </g>`;
     }).join("");
 
-    return `<svg viewBox="0 0 ${geometry.canvas.width} ${geometry.canvas.height}" role="img" aria-label="System projection at ${this.checkpoint.cursor} ${escapeText(this.data.execution.unit || "step")}">
+    return `<svg viewBox="0 0 ${geometry.canvas.width} ${geometry.canvas.height}" role="img" aria-label="${escapeText(plan.label)} at ${this.checkpoint.cursor} ${escapeText(this.data.execution.unit || "step")}">
       <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--sv-muted)"/></marker>
         <marker id="arrow-active" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--sv-transfer)"/></marker>
@@ -2002,8 +2048,8 @@ class SystemsVizNext extends HTMLElement {
     </svg>`;
   }
 
-  timelineSvg() {
-    const plan = this.data.display.timeline;
+  timelineSvg(plan = this.activeViewPlan) {
+    const related = this.relatedSelection();
     const width = Math.max(320, Math.round(this.clientWidth || 720));
     const narrow = width < 620;
     const left = narrow ? 92 : 148;
@@ -2053,7 +2099,7 @@ class SystemsVizNext extends HTMLElement {
       const markX = clampValue(rawX - Math.max(0, markWidth - rawWidth) / 2, left, width - right - markWidth);
       const isActive = active.has(mark.id);
       const isPast = mark.end <= this.checkpoint.cursor;
-      const isSelected = this.selection === mark.id;
+      const isSelected = related.has(mark.id);
       const color = colors[mark.kind] || "var(--sv-primary)";
       const fontSize = markWidth >= 72 ? 10 : markWidth >= 42 ? 9 : 8;
       const padding = markWidth >= 42 ? 6 : 3;
@@ -2071,7 +2117,7 @@ class SystemsVizNext extends HTMLElement {
         ${fitted.text ? `<text class="timeline-label" data-layout-label="timeline-mark" data-layout-owner="${escapeText(mark.id)}" x="${markX + padding}" y="${y + 17.5}" font-size="${fontSize}" font-weight="${isActive ? 650 : 500}" clip-path="url(#timeline-label-${markIndex})">${escapeText(fitted.text)}</text>` : ""}
       </g>`;
     }).join("");
-    return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Resource timeline at ${this.checkpoint.cursor} ${escapeText(plan.unit)}">
+    return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeText(plan.label)} at ${this.checkpoint.cursor} ${escapeText(plan.unit)}">
       <defs>${laneClipDefinitions}${clipDefinitions}</defs>
       <text data-layout-label="timeline-title" data-layout-owner="timeline:title" x="${left}" y="18" font-size="11" fill="var(--sv-muted)">time (${escapeText(plan.unit)})</text>
       ${ticks}${laneMarkup}${marks}

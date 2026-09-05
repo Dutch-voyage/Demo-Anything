@@ -18,6 +18,10 @@ def _checkpoint(compiled: dict, checkpoint_id: str) -> dict:
     return next(item for item in compiled["execution"]["checkpoints"] if item["id"] == checkpoint_id)
 
 
+def _view(compiled: dict, identifier: str) -> dict:
+    return next(view for view in compiled["display"]["views"] if view["id"] == identifier)
+
+
 def _materialization_ids(checkpoint: dict) -> set[str]:
     return {item["id"] for item in checkpoint["materializations"]}
 
@@ -39,9 +43,9 @@ def test_deepep_compilation_is_deterministic_and_domain_neutral() -> None:
     assert first == _compiled()
     assert len(first["execution"]["events"]) == 12
     assert len(first["execution"]["checkpoints"]) == 9
-    assert len(first["display"]["timeline"]["marks"]) == 34
-    assert first["display"]["system"]["roots"] == ["rank0", "rank1", "rank2", "rank3"]
-    assert [lane["id"] for lane in first["display"]["timeline"]["lanes"]] == [
+    assert len(_view(first, "timeline")["marks"]) == 34
+    assert _view(first, "system")["roots"] == ["rank0", "rank1", "rank2", "rank3"]
+    assert [lane["id"] for lane in _view(first, "timeline")["lanes"]] == [
         "route_layout",
         "nvlink_bw",
         "rdma_bw",

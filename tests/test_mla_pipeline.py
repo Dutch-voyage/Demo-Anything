@@ -19,6 +19,10 @@ def _checkpoint(compiled: dict, checkpoint_id: str) -> dict:
     return next(item for item in compiled["execution"]["checkpoints"] if item["id"] == checkpoint_id)
 
 
+def _view(compiled: dict, identifier: str) -> dict:
+    return next(view for view in compiled["display"]["views"] if view["id"] == identifier)
+
+
 def _materializations(checkpoint: dict) -> dict[str, dict]:
     return {item["id"]: item for item in checkpoint["materializations"]}
 
@@ -43,9 +47,9 @@ def test_mla_examples_use_step_mode_and_shared_display_structure() -> None:
     assert prefill["execution"]["mode"] == decode["execution"]["mode"] == "steps"
     assert len(prefill["execution"]["checkpoints"]) == 8
     assert len(decode["execution"]["checkpoints"]) == 8
-    assert len(prefill["display"]["timeline"]["marks"]) == 10
-    assert len(decode["display"]["timeline"]["marks"]) == 10
-    assert prefill["display"]["system"]["roots"] == decode["display"]["system"]["roots"] == [
+    assert len(_view(prefill, "timeline")["marks"]) == 10
+    assert len(_view(decode, "timeline")["marks"]) == 10
+    assert _view(prefill, "system")["roots"] == _view(decode, "system")["roots"] == [
         "input",
         "projection",
         "cache",
@@ -59,9 +63,9 @@ def test_mla_examples_use_step_mode_and_shared_display_structure() -> None:
         "latent_reduce",
         "output_projection",
     ]
-    assert [lane["id"] for lane in prefill["display"]["timeline"]["lanes"]] == expected_lanes
-    assert [lane["id"] for lane in decode["display"]["timeline"]["lanes"]] == expected_lanes
-    prefill_lanes = {lane["id"]: lane for lane in prefill["display"]["timeline"]["lanes"]}
+    assert [lane["id"] for lane in _view(prefill, "timeline")["lanes"]] == expected_lanes
+    assert [lane["id"] for lane in _view(decode, "timeline")["lanes"]] == expected_lanes
+    prefill_lanes = {lane["id"]: lane for lane in _view(prefill, "timeline")["lanes"]}
     assert prefill_lanes["projection_compute"]["tracks"] == 2
     assert prefill_lanes["cache_write"]["tracks"] == 2
     assert prefill_lanes["score_compute"]["tracks"] == 2
@@ -69,7 +73,7 @@ def test_mla_examples_use_step_mode_and_shared_display_structure() -> None:
 
 def test_concurrent_mla_marks_receive_distinct_timeline_tracks() -> None:
     for compiled in (_compiled(PREFILL), _compiled(DECODE)):
-        marks = {item["id"]: item for item in compiled["display"]["timeline"]["marks"]}
+        marks = {item["id"]: item for item in _view(compiled, "timeline")["marks"]}
         assert marks[next(key for key in marks if key.startswith("project_") and "query" in key)]["track"] != marks[
             next(key for key in marks if key.startswith("compress_"))
         ]["track"]
